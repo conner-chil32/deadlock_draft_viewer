@@ -24,7 +24,6 @@ class Hero:
         self.crit = self.assets_dir / "crit.png"
         self.gloat = self.assets_dir / "gloat.png"
         self.icon = self.assets_dir / "icon.png"
-        self.minimap = self.assets_dir / "minimap.png"
         self.name_svg = self.assets_dir / "name.svg"
         self.render = self.assets_dir / "render.png"
         
@@ -54,7 +53,6 @@ class Hero:
             "crit": self.crit,
             "gloat": self.gloat,
             "icon": self.icon,
-            "minimap": self.minimap,
             "name": self.name_svg,
             "render": self.render,
         }

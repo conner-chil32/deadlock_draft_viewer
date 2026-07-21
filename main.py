@@ -272,7 +272,13 @@ def main():
 
     # Draft-mode setup (heroes + keybinds)
     abrams = Hero("abrams", volume=0.8)
+    apollo = Hero("apollo", volume=0.8)
+    
+    
     keybind_manager.register("shift+1", lambda: activate_hero(abrams), label="abrams")
+    keybind_manager.register("shift+2", lambda: activate_hero(apollo), label="apollo")
+    
+    
     keybind_manager.register("f1",  toggle_background, label="toggle_background")
     keybind_manager.register("esc", shutdown,          label="shutdown")
 
@@ -339,6 +345,7 @@ def main():
     KEYBINDS = [
         ("F1",        "Toggle background mode"),
         ("Shift+1",   "Select hero: Abrams"),
+        ("Shift+2",   "Select hero: Apollo"),
         ("ESC",       "Exit"),
     ]
     for key, desc in KEYBINDS:
