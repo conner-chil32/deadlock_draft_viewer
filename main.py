@@ -3,13 +3,15 @@ import json
 import pygame
 import random
 import sys
-import tkinter as tk
 from tkinter import filedialog
 from pynput import keyboard
 
 from draft import DRAFT_ORDER, DraftManager, DraftSlots, TEAM_NAMES
 from hero import Hero
+from heroes import HERO_REGISTRY
 from keybinds import KeybindManager
+from menu import Button
+from status_window import StatusWindow
 
 # Configuration parameters
 WINDOW_WIDTH = 1920
@@ -43,51 +45,14 @@ unlock_at = 0
 # Single shared keybind manager; populated in main().
 keybind_manager = KeybindManager()
 
-# Shared tkinter root — created once in main(), reused by import_draft().
-tk_root = None
-
 # Draft manager (order + slot state).
 draft_manager = DraftManager()
 
 
-# ---------------------------------------------------------------------------
-# Menu helpers
-# ---------------------------------------------------------------------------
-
-class Button:
-    """Simple rectangular button for the menu screen."""
-
-    def __init__(self, rect, text, font,
-                 color=(40, 40, 40), hover_color=(70, 70, 70),
-                 text_color=(255, 255, 255), border_color=(180, 180, 180)):
-        self.rect = pygame.Rect(rect)
-        self.text = text
-        self.font = font
-        self.color = color
-        self.hover_color = hover_color
-        self.text_color = text_color
-        self.border_color = border_color
-
-    def draw(self, surface):
-        hovered = self.rect.collidepoint(pygame.mouse.get_pos())
-        fill = self.hover_color if hovered else self.color
-        pygame.draw.rect(surface, fill, self.rect, border_radius=8)
-        pygame.draw.rect(surface, self.border_color, self.rect, width=2, border_radius=8)
-        label = self.font.render(self.text, True, self.text_color)
-        surface.blit(label, label.get_rect(center=self.rect.center))
-
-    def is_clicked(self, event):
-        return (
-            event.type == pygame.MOUSEBUTTONDOWN
-            and event.button == 1
-            and self.rect.collidepoint(event.pos)
-        )
-
-
-def import_draft():
+def import_draft(parent=None):
     """Open a file picker, load a draft JSON, and print the actions to the console."""
     file_path = filedialog.askopenfilename(
-        parent=tk_root,
+        parent=parent,
         title="Select Draft JSON",
         filetypes=[("JSON files", "*.json"), ("All files", "*.*")],
     )
@@ -121,9 +86,6 @@ def import_draft():
         hero        = entry.get("hero", "?")
         print(f"{team_name}: {action_type} -> {hero}")
     print("-" * 50)
-
-
-# ---------------------------------------------------------------------------
 
 
 def make_window_transparent(hwnd: int) -> None:
@@ -277,17 +239,15 @@ def main():
         "Team 2 First", button_font
     )
 
-    # Draft-mode setup (heroes + keybinds)
-    abrams = Hero("abrams", volume=0.8)
-    apollo = Hero("apollo", volume=0.8)
-    bebop = Hero("bebop", volume=0.8)
-    
-    
-    keybind_manager.register("shift+1", lambda: activate_hero(abrams), label="abrams")
-    keybind_manager.register("shift+2", lambda: activate_hero(apollo), label="apollo")
-    keybind_manager.register("shift+3", lambda: activate_hero(bebop), label="bebop")
-    
-    
+    # Load heroes and register their keybinds from the roster
+    for combo, name, volume in HERO_REGISTRY:
+        try:
+            h = Hero(name, volume=volume)
+            keybind_manager.register(combo, lambda hero=h: activate_hero(hero), label=name)
+            print(f"Loaded: {h!r}")
+        except Exception as e:
+            print(f"[WARN] Could not load hero '{name}': {e}")
+
     keybind_manager.register("f1",  toggle_background, label="toggle_background")
     keybind_manager.register("esc", shutdown,          label="shutdown")
 
@@ -301,143 +261,8 @@ def main():
     card_surf      = None
     crit_surf      = None
 
-    listener = None  # Started only when Manual Draft is chosen
-
-    # ------------------------------------------------------------------
-    # Status window (tkinter)
-    # ------------------------------------------------------------------
-    global tk_root
-    WIN_BG = "#1e1e2e"
-    WIN_FG = "#cdd6f4"
-    LBL_FG = "#89b4fa"
-    FONT_LABEL = ("Segoe UI", 9, "bold")
-    FONT_VALUE = ("Consolas", 10)
-
-    LOCKED_FG   = "#f38ba8"   # Red tint for locked
-    UNLOCKED_FG = "#a6e3a1"   # Green tint for unlocked
-    DIM_FG      = "#585b70"   # Muted colour for static keybind labels
-
-    tk_root = tk.Tk()
-    tk_root.title("Draft Viewer — Status")
-    tk_root.geometry("680x340")
-    tk_root.resizable(False, False)
-    tk_root.configure(bg=WIN_BG)
-    tk_root.protocol("WM_DELETE_WINDOW", lambda: None)  # Prevent accidental close
-
-    # ------------------------------------------------------------------
-    # Two-column layout: left = status info, right = draft slots
-    # ------------------------------------------------------------------
-    cols = tk.Frame(tk_root, bg=WIN_BG)
-    cols.pack(fill="both", expand=True)
-
-    left_col = tk.Frame(cols, bg=WIN_BG)
-    left_col.pack(side="left", fill="y", padx=(0, 0))
-
-    tk.Frame(cols, bg="#313244", width=2).pack(side="left", fill="y", padx=4)
-
-    right_col = tk.Frame(cols, bg=WIN_BG)
-    right_col.pack(side="left", fill="both", expand=True)
-
-    # ------------------------------------------------------------------
-    # Left column — status rows + keybinds
-    # ------------------------------------------------------------------
-    def _row(parent, label_text, var, value_fg=None):
-        frame = tk.Frame(parent, bg=WIN_BG)
-        frame.pack(fill="x", padx=10, pady=3)
-        tk.Label(frame, text=label_text, bg=WIN_BG, fg=LBL_FG,
-                 font=FONT_LABEL, anchor="w", width=14).pack(side="left")
-        lbl = tk.Label(frame, textvariable=var, bg=WIN_BG,
-                       fg=value_fg or WIN_FG, font=FONT_VALUE, anchor="w")
-        lbl.pack(side="left")
-        return lbl
-
-    sv_state        = tk.StringVar(value="Menu")
-    sv_bg_mode      = tk.StringVar(value="Chroma Key")
-    sv_hero         = tk.StringVar(value="\u2014")
-    sv_hero_state   = tk.StringVar(value="\u2014")
-    sv_locked       = tk.StringVar(value="\u2014")
-    sv_draft_step   = tk.StringVar(value="\u2014")
-    sv_draft_action = tk.StringVar(value="\u2014")
-
-    tk.Frame(left_col, bg="#313244", height=2).pack(fill="x", pady=(8, 4))
-    _row(left_col, "State:",       sv_state)
-    _row(left_col, "Background:",  sv_bg_mode)
-    _row(left_col, "Hero:",        sv_hero)
-    _row(left_col, "Hero State:",  sv_hero_state)
-    locked_lbl = _row(left_col, "Hero Select:",  sv_locked)
-    _row(left_col, "Draft Step:",  sv_draft_step)
-    _row(left_col, "Next Action:", sv_draft_action)
-
-    tk.Frame(left_col, bg="#313244", height=2).pack(fill="x", pady=(6, 4))
-    tk.Label(left_col, text="  Keybinds", bg=WIN_BG, fg=LBL_FG,
-             font=("Segoe UI", 9, "bold"), anchor="w").pack(fill="x", padx=10)
-
-    KEYBINDS = [
-        ("F1",       "Toggle background mode"),
-        ("Shift+1",  "Select hero: Abrams"),
-        ("Shift+2",  "Select hero: Apollo"),
-        ("Shift+3",  "Select hero: Bebop"),
-        ("ESC",      "Exit"),
-    ]
-    for key, desc in KEYBINDS:
-        row = tk.Frame(left_col, bg=WIN_BG)
-        row.pack(fill="x", padx=10, pady=1)
-        tk.Label(row, text=key, bg=WIN_BG, fg=WIN_FG,
-                 font=("Consolas", 9, "bold"), width=10, anchor="w").pack(side="left")
-        tk.Label(row, text=desc, bg=WIN_BG, fg=DIM_FG,
-                 font=("Segoe UI", 9), anchor="w").pack(side="left")
-
-    tk.Frame(left_col, bg="#313244", height=2).pack(fill="x", pady=(6, 0))
-
-    # ------------------------------------------------------------------
-    # Right column — draft slots
-    # ------------------------------------------------------------------
-    EMPTY_SLOT  = "\u2500\u2500\u2500\u2500\u2500\u2500"
-    SLOT_W      = 7
-    SLOT_BG     = "#313244"
-    SLOT_FG     = WIN_FG
-    SLOT_BAN_FG = "#f38ba8"
-
-    sv_t1_picks = [tk.StringVar(value=EMPTY_SLOT) for _ in range(DraftSlots.NUM_PICKS)]
-    sv_t1_bans  = [tk.StringVar(value=EMPTY_SLOT) for _ in range(DraftSlots.NUM_BANS)]
-    sv_t2_picks = [tk.StringVar(value=EMPTY_SLOT) for _ in range(DraftSlots.NUM_PICKS)]
-    sv_t2_bans  = [tk.StringVar(value=EMPTY_SLOT) for _ in range(DraftSlots.NUM_BANS)]
-
-    def _slot_row(parent, label_text, slot_vars, fg):
-        row = tk.Frame(parent, bg=WIN_BG)
-        row.pack(fill="x", padx=8, pady=2)
-        tk.Label(row, text=label_text, bg=WIN_BG, fg=LBL_FG,
-                 font=FONT_LABEL, width=5, anchor="w").pack(side="left")
-        for var in slot_vars:
-            tk.Label(row, textvariable=var, bg=SLOT_BG, fg=fg,
-                     font=("Consolas", 8), width=SLOT_W,
-                     relief="flat", padx=2, anchor="center").pack(side="left", padx=1)
-
-    def _team_block(parent, team_label, pick_vars, ban_vars):
-        tk.Label(parent, text=team_label, bg=WIN_BG, fg=WIN_FG,
-                 font=("Segoe UI", 9, "bold"), anchor="w").pack(fill="x", padx=8, pady=(8, 0))
-        _slot_row(parent, "Picks:", pick_vars, SLOT_FG)
-        _slot_row(parent, "Bans:",  ban_vars,  SLOT_BAN_FG)
-
-    tk.Frame(right_col, bg="#313244", height=2).pack(fill="x", pady=(8, 0))
-    tk.Label(right_col, text="  Draft Slots", bg=WIN_BG, fg=LBL_FG,
-             font=("Segoe UI", 9, "bold"), anchor="w").pack(fill="x", padx=8)
-    _team_block(right_col, "Hidden King", sv_t1_picks, sv_t1_bans)
-    tk.Frame(right_col, bg="#313244", height=1).pack(fill="x", padx=8, pady=(6, 0))
-    _team_block(right_col, "ArchMother",  sv_t2_picks, sv_t2_bans)
-    tk.Frame(right_col, bg="#313244", height=2).pack(fill="x", pady=(6, 0))
-
-    def _update_slot_vars():
-        """Sync StringVars with the current draft_manager.slots state."""
-        slots = draft_manager.slots
-        for i, v in enumerate(sv_t1_picks):
-            v.set(slots.team1_picks[i] or EMPTY_SLOT)
-        for i, v in enumerate(sv_t1_bans):
-            v.set(slots.team1_bans[i] or EMPTY_SLOT)
-        for i, v in enumerate(sv_t2_picks):
-            v.set(slots.team2_picks[i] or EMPTY_SLOT)
-        for i, v in enumerate(sv_t2_bans):
-            v.set(slots.team2_bans[i] or EMPTY_SLOT)
+    listener      = None  # Started only when Manual Draft is chosen
+    status_window = StatusWindow()
 
     print(f"Window created: {WINDOW_WIDTH}x{WINDOW_HEIGHT}")
     print("-" * 50)
@@ -448,24 +273,10 @@ def main():
             now = pygame.time.get_ticks()
             events = pygame.event.get()
 
-            # Update status window every frame
-            sv_state.set(app_state.replace("_", " ").title())
-            sv_bg_mode.set("Solid (OBS)" if solid_background else "Chroma Key")
-            sv_hero.set(active_hero.name.capitalize() if active_hero else "—")
-            sv_hero_state.set(display_state.capitalize() if app_state == "draft" else "—")
-            if app_state == "draft":
-                is_locked = now < unlock_at
-                sv_locked.set("Locked" if is_locked else "Unlocked")
-                locked_lbl.config(fg=LOCKED_FG if is_locked else UNLOCKED_FG)
-                sv_draft_step.set(draft_manager.step_label())
-                sv_draft_action.set(draft_manager.current_label())
-            else:
-                sv_locked.set("—")
-                locked_lbl.config(fg=WIN_FG)
-                sv_draft_step.set("—")
-                sv_draft_action.set("—")
-            _update_slot_vars()
-            tk_root.update()
+            status_window.update(
+                app_state, solid_background, active_hero,
+                display_state, now, unlock_at, draft_manager
+            )
 
             for event in events:
                 if event.type == pygame.QUIT:
@@ -482,7 +293,7 @@ def main():
                     if btn_manual.is_clicked(event):
                         app_state = "team_select"
                     elif btn_import.is_clicked(event):
-                        import_draft()
+                        import_draft(status_window.root)
 
                 screen.fill((20, 20, 30))
                 title_surf = title_font.render("Deadlock Draft Viewer", True, (220, 220, 220))
@@ -604,8 +415,7 @@ def main():
     finally:
         if listener:
             listener.stop()
-        if tk_root:
-            tk_root.destroy()
+        status_window.destroy()
         pygame.quit()
         sys.exit()
 
