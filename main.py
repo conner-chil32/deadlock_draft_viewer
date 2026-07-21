@@ -109,10 +109,13 @@ def make_window_transparent(hwnd: int) -> None:
 def activate_hero(hero):
     """
     Request a hero to be displayed. Ignored during the lockout period
-    (voice line playing + 2 s after card appears). Safe to call from
-    the key listener thread.
+    (voice line playing + 2 s after card appears) or once the draft is
+    complete. Safe to call from the key listener thread.
     """
     global pending_hero
+    if draft_manager.is_complete:
+        print(f"Draft complete — ignoring '{hero.name}'")
+        return
     if pygame.time.get_ticks() < unlock_at:
         print(f"Locked — ignoring '{hero.name}'")
         return
