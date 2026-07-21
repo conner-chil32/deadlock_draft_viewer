@@ -1,4 +1,5 @@
 import tkinter as tk
+from tkinter import ttk
 
 from draft import DraftSlots
 from heroes import HERO_REGISTRY
@@ -32,10 +33,18 @@ class StatusWindow:
     EMPTY_SLOT = "\u2500\u2500\u2500\u2500\u2500\u2500"   # ──────
     SLOT_W     = 7
 
-    def __init__(self):
+    def __init__(self, hero_names: list = None, on_hero_select=None):
+        """
+        hero_names    : list of hero name strings to populate the Draft Input dropdown.
+        on_hero_select: callback(hero_name: str) called when the operator submits
+                        a hero from the status window UI.
+        """
+        self._hero_names     = hero_names or []
+        self._on_hero_select = on_hero_select
+
         self.root = tk.Tk()
         self.root.title("Draft Viewer \u2014 Status")
-        self.root.geometry("680x340")
+        self.root.geometry("820x390")
         self.root.resizable(False, False)
         self.root.configure(bg=self.WIN_BG)
         self.root.protocol("WM_DELETE_WINDOW", lambda: None)
@@ -74,11 +83,15 @@ class StatusWindow:
         left_col = tk.Frame(cols, bg=self.WIN_BG)
         left_col.pack(side="left", fill="y")
         tk.Frame(cols, bg=self.SEP_COLOR, width=2).pack(side="left", fill="y", padx=4)
+        mid_col = tk.Frame(cols, bg=self.WIN_BG)
+        mid_col.pack(side="left", fill="y")
+        tk.Frame(cols, bg=self.SEP_COLOR, width=2).pack(side="left", fill="y", padx=4)
         right_col = tk.Frame(cols, bg=self.WIN_BG)
         right_col.pack(side="left", fill="both", expand=True)
 
         self._build_left(left_col)
-        self._build_right(right_col)
+        self._build_right(mid_col)
+        self._build_mid(right_col)
 
     def _build_left(self, col):
         self._sep(col, (8, 4))
@@ -93,18 +106,26 @@ class StatusWindow:
         self._sep(col, (6, 4))
         tk.Label(col, text="  Keybinds", bg=self.WIN_BG, fg=self.LBL_FG,
                  font=self.FONT_TEAM, anchor="w").pack(fill="x", padx=10)
-
-        keybinds = (
-            [("F1",  "Toggle background mode")]
-            + [(self._fmt_combo(c), f"Hero: {n.capitalize()}") for c, n, _ in HERO_REGISTRY]
-            + [("ESC", "Exit")]
-        )
-        for key, desc in keybinds:
+        for key, desc in [("F1", "Toggle background"), ("ESC", "Exit")]:
             row = tk.Frame(col, bg=self.WIN_BG)
-            row.pack(fill="x", padx=10, pady=1)
+            row.pack(fill="x", padx=10, pady=2)
             tk.Label(row, text=key,  bg=self.WIN_BG, fg=self.WIN_FG,
                      font=self.FONT_KEY,  width=10, anchor="w").pack(side="left")
             tk.Label(row, text=desc, bg=self.WIN_BG, fg=self.DIM_FG,
+                     font=self.FONT_DESC, anchor="w").pack(side="left")
+        self._sep(col, (6, 0))
+
+    def _build_mid(self, col):
+        self._sep(col, (8, 4))
+        tk.Label(col, text="  Hero Keybinds", bg=self.WIN_BG, fg=self.LBL_FG,
+                 font=self.FONT_TEAM, anchor="w").pack(fill="x", padx=10)
+
+        for combo, name, _ in HERO_REGISTRY:
+            row = tk.Frame(col, bg=self.WIN_BG)
+            row.pack(fill="x", padx=10, pady=2)
+            tk.Label(row, text=self._fmt_combo(combo), bg=self.WIN_BG, fg=self.WIN_FG,
+                     font=self.FONT_KEY,  width=10, anchor="w").pack(side="left")
+            tk.Label(row, text=name.capitalize(), bg=self.WIN_BG, fg=self.DIM_FG,
                      font=self.FONT_DESC, anchor="w").pack(side="left")
 
         self._sep(col, (6, 0))
@@ -116,7 +137,68 @@ class StatusWindow:
         self._team_block(col, "Hidden King", self.sv_t1_picks, self.sv_t1_bans)
         tk.Frame(col, bg=self.SEP_COLOR, height=1).pack(fill="x", padx=8, pady=(6, 0))
         self._team_block(col, "ArchMother",  self.sv_t2_picks, self.sv_t2_bans)
-        self._sep(col, (6, 0))
+        self._sep(col, (6, 4))
+        self._build_draft_input(col)
+
+    def _build_draft_input(self, col):
+        """Dropdown + Submit button so operators can pick/ban via the status window."""
+        tk.Label(col, text="  Draft Input", bg=self.WIN_BG, fg=self.LBL_FG,
+                 font=self.FONT_TEAM, anchor="w").pack(fill="x", padx=8)
+
+        row = tk.Frame(col, bg=self.WIN_BG)
+        row.pack(fill="x", padx=8, pady=6)
+
+        self._sv_selected_hero = tk.StringVar()
+        hero_display = [n.capitalize() for n in self._hero_names]
+
+        style = ttk.Style()
+        style.theme_use("default")
+        style.configure(
+            "DraftInput.TCombobox",
+            fieldbackground=self.SLOT_BG,
+            background=self.SLOT_BG,
+            foreground=self.WIN_FG,
+            selectbackground=self.SLOT_BG,
+            selectforeground=self.WIN_FG,
+        )
+
+        combo = ttk.Combobox(
+            row,
+            textvariable=self._sv_selected_hero,
+            values=hero_display,
+            state="readonly",
+            style="DraftInput.TCombobox",
+            width=14,
+        )
+        if hero_display:
+            combo.current(0)
+        combo.pack(side="left", padx=(0, 6))
+
+        btn = tk.Button(
+            row,
+            text="Submit",
+            bg="#45475a",
+            fg=self.WIN_FG,
+            activebackground="#585b70",
+            activeforeground=self.WIN_FG,
+            font=self.FONT_LABEL,
+            relief="flat",
+            padx=10,
+            command=self._on_submit,
+        )
+        btn.pack(side="left")
+
+        self._sep(col, (4, 0))
+
+    def _on_submit(self):
+        """Called when the operator clicks Submit in the Draft Input section."""
+        if not self._on_hero_select:
+            return
+        raw = self._sv_selected_hero.get()
+        if not raw:
+            return
+        hero_name = raw.lower()
+        self._on_hero_select(hero_name)
 
     # ------------------------------------------------------------------
     # Widget helpers

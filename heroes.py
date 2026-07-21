@@ -14,4 +14,5 @@ HERO_REGISTRY = [
     ("shift+2", "apollo", 0.8),
     ("shift+3", "bebop",  0.8),
     ("shift+4", "billy",  0.8),
+    ("shift+5", "calico", 0.8),
 ]

@@ -239,11 +239,13 @@ def main():
         "Team 2 First", button_font
     )
 
-    # Load heroes and register their keybinds from the roster
+    # Load heroes, register keybinds, and build the name→object lookup
+    hero_map: dict = {}
     for combo, name, volume in HERO_REGISTRY:
         try:
             h = Hero(name, volume=volume)
             keybind_manager.register(combo, lambda hero=h: activate_hero(hero), label=name)
+            hero_map[name] = h
             print(f"Loaded: {h!r}")
         except Exception as e:
             print(f"[WARN] Could not load hero '{name}': {e}")
@@ -262,7 +264,10 @@ def main():
     crit_surf      = None
 
     listener      = None  # Started only when Manual Draft is chosen
-    status_window = StatusWindow()
+    status_window = StatusWindow(
+        hero_names=list(hero_map.keys()),
+        on_hero_select=lambda name: activate_hero(hero_map[name]) if name in hero_map else None,
+    )
 
     print(f"Window created: {WINDOW_WIDTH}x{WINDOW_HEIGHT}")
     print("-" * 50)
