@@ -71,14 +71,14 @@ class Hero:
         Get a list of voice line files.
         
         Args:
-            voice_type: Either "select" or "bans"
+            voice_type: Either "select" or "ban"
         
         Returns:
             List of Path objects to .mp3 files
         """
         if voice_type == "select":
             voice_dir = self.voice_select
-        elif voice_type == "bans":
+        elif voice_type == "ban":
             voice_dir = self.voice_bans
         else:
             raise ValueError(f"Unknown voice type: {voice_type}")

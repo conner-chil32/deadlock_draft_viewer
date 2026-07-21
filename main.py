@@ -7,7 +7,7 @@ import tkinter as tk
 from tkinter import filedialog
 from pynput import keyboard
 
-from draft import DraftSlots
+from draft import DRAFT_ORDER, DraftManager, DraftSlots, TEAM_NAMES
 from hero import Hero
 from keybinds import KeybindManager
 
@@ -46,8 +46,8 @@ keybind_manager = KeybindManager()
 # Shared tkinter root — created once in main(), reused by import_draft().
 tk_root = None
 
-# Draft slot state.
-draft_slots = DraftSlots()
+# Draft manager (order + slot state).
+draft_manager = DraftManager()
 
 
 # ---------------------------------------------------------------------------
@@ -198,9 +198,8 @@ def scale_to_fit(surface, max_width, max_height):
 
 def load_hero_surfaces(hero):
     """
-    Load and return (render_surface, card_surface) for a hero.
-    Both are independently scaled to fit the window, preserving their
-    original aspect ratios.
+    Load and return (render_surface, card_surface, crit_surface) for a hero.
+    All three are independently scaled to fit the window.
     """
     render_raw = pygame.image.load(str(hero.get_asset("render"))).convert_alpha()
     render_surf = scale_to_fit(render_raw, WINDOW_WIDTH, WINDOW_HEIGHT)
@@ -208,17 +207,25 @@ def load_hero_surfaces(hero):
     card_raw = pygame.image.load(str(hero.get_asset("card"))).convert_alpha()
     card_surf = scale_to_fit(card_raw, WINDOW_WIDTH, WINDOW_HEIGHT)
 
-    return render_surf, card_surf
+    crit_raw = pygame.image.load(str(hero.get_asset("crit"))).convert_alpha()
+    crit_surf = scale_to_fit(crit_raw, WINDOW_WIDTH, WINDOW_HEIGHT)
+
+    return render_surf, card_surf, crit_surf
 
 
-def play_select_voice_line(hero):
-    """Pick a random select voice line and play it at the hero's volume."""
-    voice_lines = hero.get_voice_lines("select")
+def play_voice_line(hero, voice_type: str):
+    """Play a random voice line of the given type ('select'/'pick' or 'ban')."""
+    # Map draft action types to voice folder names
+    voice_folder = "select" if voice_type == "pick" else voice_type
+    voice_lines = hero.get_voice_lines(voice_folder)
     if not voice_lines:
-        print(f"No select voice lines found for '{hero.name}'")
+        # Fall back to select lines if the requested type has none
+        voice_lines = hero.get_voice_lines("select")
+    if not voice_lines:
+        print(f"No voice lines found for '{hero.name}'")
         return
     chosen = random.choice(voice_lines)
-    print(f"Playing voice line: {chosen.name}")
+    print(f"Playing {voice_type} voice line: {chosen.name}")
     pygame.mixer.music.load(str(chosen))
     pygame.mixer.music.set_volume(hero.volume)
     pygame.mixer.music.play()
@@ -273,23 +280,26 @@ def main():
     # Draft-mode setup (heroes + keybinds)
     abrams = Hero("abrams", volume=0.8)
     apollo = Hero("apollo", volume=0.8)
+    bebop = Hero("bebop", volume=0.8)
     
     
     keybind_manager.register("shift+1", lambda: activate_hero(abrams), label="abrams")
     keybind_manager.register("shift+2", lambda: activate_hero(apollo), label="apollo")
+    keybind_manager.register("shift+3", lambda: activate_hero(bebop), label="bebop")
     
     
     keybind_manager.register("f1",  toggle_background, label="toggle_background")
     keybind_manager.register("esc", shutdown,          label="shutdown")
 
-    # Per-hero surface cache: hero.name -> (render_surf, card_surf)
+    # Per-hero surface cache: hero.name -> (render_surf, card_surf, crit_surf)
     hero_cache = {}
 
-    # Display state machine  ("idle" | "render" | "card")
+    # Display state machine  ("idle" | "render" | "card" | "crit")
     display_state  = "idle"
     active_hero    = None
     render_surf    = None
     card_surf      = None
+    crit_surf      = None
 
     listener = None  # Started only when Manual Draft is chosen
 
@@ -309,103 +319,125 @@ def main():
 
     tk_root = tk.Tk()
     tk_root.title("Draft Viewer — Status")
-    tk_root.geometry("320x480")
+    tk_root.geometry("680x340")
     tk_root.resizable(False, False)
     tk_root.configure(bg=WIN_BG)
     tk_root.protocol("WM_DELETE_WINDOW", lambda: None)  # Prevent accidental close
 
+    # ------------------------------------------------------------------
+    # Two-column layout: left = status info, right = draft slots
+    # ------------------------------------------------------------------
+    cols = tk.Frame(tk_root, bg=WIN_BG)
+    cols.pack(fill="both", expand=True)
+
+    left_col = tk.Frame(cols, bg=WIN_BG)
+    left_col.pack(side="left", fill="y", padx=(0, 0))
+
+    tk.Frame(cols, bg="#313244", width=2).pack(side="left", fill="y", padx=4)
+
+    right_col = tk.Frame(cols, bg=WIN_BG)
+    right_col.pack(side="left", fill="both", expand=True)
+
+    # ------------------------------------------------------------------
+    # Left column — status rows + keybinds
+    # ------------------------------------------------------------------
     def _row(parent, label_text, var, value_fg=None):
         frame = tk.Frame(parent, bg=WIN_BG)
-        frame.pack(fill="x", padx=14, pady=3)
+        frame.pack(fill="x", padx=10, pady=3)
         tk.Label(frame, text=label_text, bg=WIN_BG, fg=LBL_FG,
-                 font=FONT_LABEL, anchor="w", width=16).pack(side="left")
+                 font=FONT_LABEL, anchor="w", width=14).pack(side="left")
         lbl = tk.Label(frame, textvariable=var, bg=WIN_BG,
                        fg=value_fg or WIN_FG, font=FONT_VALUE, anchor="w")
         lbl.pack(side="left")
         return lbl
 
-    sv_state      = tk.StringVar(value="Menu")
-    sv_bg_mode    = tk.StringVar(value="Chroma Key")
-    sv_hero       = tk.StringVar(value="\u2014")
-    sv_hero_state = tk.StringVar(value="\u2014")
-    sv_locked     = tk.StringVar(value="\u2014")
+    sv_state        = tk.StringVar(value="Menu")
+    sv_bg_mode      = tk.StringVar(value="Chroma Key")
+    sv_hero         = tk.StringVar(value="\u2014")
+    sv_hero_state   = tk.StringVar(value="\u2014")
+    sv_locked       = tk.StringVar(value="\u2014")
+    sv_draft_step   = tk.StringVar(value="\u2014")
+    sv_draft_action = tk.StringVar(value="\u2014")
 
-    tk.Frame(tk_root, bg="#313244", height=2).pack(fill="x", pady=(8, 4))
-    _row(tk_root, "State:",       sv_state)
-    _row(tk_root, "Background:",  sv_bg_mode)
-    _row(tk_root, "Hero:",        sv_hero)
-    _row(tk_root, "Hero State:",  sv_hero_state)
-    locked_lbl = _row(tk_root, "Hero Select:",  sv_locked)
+    tk.Frame(left_col, bg="#313244", height=2).pack(fill="x", pady=(8, 4))
+    _row(left_col, "State:",       sv_state)
+    _row(left_col, "Background:",  sv_bg_mode)
+    _row(left_col, "Hero:",        sv_hero)
+    _row(left_col, "Hero State:",  sv_hero_state)
+    locked_lbl = _row(left_col, "Hero Select:",  sv_locked)
+    _row(left_col, "Draft Step:",  sv_draft_step)
+    _row(left_col, "Next Action:", sv_draft_action)
 
-    # Keybinds section
-    tk.Frame(tk_root, bg="#313244", height=2).pack(fill="x", pady=(6, 4))
-    tk.Label(tk_root, text="  Keybinds", bg=WIN_BG, fg=LBL_FG,
-             font=("Segoe UI", 9, "bold"), anchor="w").pack(fill="x", padx=14)
+    tk.Frame(left_col, bg="#313244", height=2).pack(fill="x", pady=(6, 4))
+    tk.Label(left_col, text="  Keybinds", bg=WIN_BG, fg=LBL_FG,
+             font=("Segoe UI", 9, "bold"), anchor="w").pack(fill="x", padx=10)
 
     KEYBINDS = [
-        ("F1",        "Toggle background mode"),
-        ("Shift+1",   "Select hero: Abrams"),
-        ("Shift+2",   "Select hero: Apollo"),
-        ("ESC",       "Exit"),
+        ("F1",       "Toggle background mode"),
+        ("Shift+1",  "Select hero: Abrams"),
+        ("Shift+2",  "Select hero: Apollo"),
+        ("Shift+3",  "Select hero: Bebop"),
+        ("ESC",      "Exit"),
     ]
     for key, desc in KEYBINDS:
-        row = tk.Frame(tk_root, bg=WIN_BG)
-        row.pack(fill="x", padx=14, pady=1)
+        row = tk.Frame(left_col, bg=WIN_BG)
+        row.pack(fill="x", padx=10, pady=1)
         tk.Label(row, text=key, bg=WIN_BG, fg=WIN_FG,
                  font=("Consolas", 9, "bold"), width=10, anchor="w").pack(side="left")
         tk.Label(row, text=desc, bg=WIN_BG, fg=DIM_FG,
                  font=("Segoe UI", 9), anchor="w").pack(side="left")
 
-    tk.Frame(tk_root, bg="#313244", height=2).pack(fill="x", pady=(4, 4))
+    tk.Frame(left_col, bg="#313244", height=2).pack(fill="x", pady=(6, 0))
 
-    # Draft slots section
-    tk.Label(tk_root, text="  Draft Slots", bg=WIN_BG, fg=LBL_FG,
-             font=("Segoe UI", 9, "bold"), anchor="w").pack(fill="x", padx=14)
-
-    EMPTY_SLOT  = "\u2500\u2500\u2500\u2500\u2500\u2500"  # ──────
-    SLOT_W      = 9   # fixed char width for each slot label
+    # ------------------------------------------------------------------
+    # Right column — draft slots
+    # ------------------------------------------------------------------
+    EMPTY_SLOT  = "\u2500\u2500\u2500\u2500\u2500\u2500"
+    SLOT_W      = 7
     SLOT_BG     = "#313244"
     SLOT_FG     = WIN_FG
-    SLOT_BAN_FG = "#f38ba8"  # red tint for ban slots
+    SLOT_BAN_FG = "#f38ba8"
 
-    # Build StringVars for every slot
     sv_t1_picks = [tk.StringVar(value=EMPTY_SLOT) for _ in range(DraftSlots.NUM_PICKS)]
     sv_t1_bans  = [tk.StringVar(value=EMPTY_SLOT) for _ in range(DraftSlots.NUM_BANS)]
     sv_t2_picks = [tk.StringVar(value=EMPTY_SLOT) for _ in range(DraftSlots.NUM_PICKS)]
     sv_t2_bans  = [tk.StringVar(value=EMPTY_SLOT) for _ in range(DraftSlots.NUM_BANS)]
 
     def _slot_row(parent, label_text, slot_vars, fg):
-        """Render a labelled row of slot boxes."""
         row = tk.Frame(parent, bg=WIN_BG)
-        row.pack(fill="x", padx=14, pady=2)
+        row.pack(fill="x", padx=8, pady=2)
         tk.Label(row, text=label_text, bg=WIN_BG, fg=LBL_FG,
-                 font=FONT_LABEL, width=6, anchor="w").pack(side="left")
+                 font=FONT_LABEL, width=5, anchor="w").pack(side="left")
         for var in slot_vars:
             tk.Label(row, textvariable=var, bg=SLOT_BG, fg=fg,
                      font=("Consolas", 8), width=SLOT_W,
                      relief="flat", padx=2, anchor="center").pack(side="left", padx=1)
 
-    def _team_block(team_label, pick_vars, ban_vars):
-        tk.Label(tk_root, text=f"  {team_label}", bg=WIN_BG, fg=WIN_FG,
-                 font=("Segoe UI", 9, "bold"), anchor="w").pack(fill="x", padx=14, pady=(6, 0))
-        _slot_row(tk_root, "Picks:", pick_vars, SLOT_FG)
-        _slot_row(tk_root, "Bans:",  ban_vars,  SLOT_BAN_FG)
+    def _team_block(parent, team_label, pick_vars, ban_vars):
+        tk.Label(parent, text=team_label, bg=WIN_BG, fg=WIN_FG,
+                 font=("Segoe UI", 9, "bold"), anchor="w").pack(fill="x", padx=8, pady=(8, 0))
+        _slot_row(parent, "Picks:", pick_vars, SLOT_FG)
+        _slot_row(parent, "Bans:",  ban_vars,  SLOT_BAN_FG)
 
-    _team_block("Team 1", sv_t1_picks, sv_t1_bans)
-    _team_block("Team 2", sv_t2_picks, sv_t2_bans)
-
-    tk.Frame(tk_root, bg="#313244", height=2).pack(fill="x", pady=(6, 0))
+    tk.Frame(right_col, bg="#313244", height=2).pack(fill="x", pady=(8, 0))
+    tk.Label(right_col, text="  Draft Slots", bg=WIN_BG, fg=LBL_FG,
+             font=("Segoe UI", 9, "bold"), anchor="w").pack(fill="x", padx=8)
+    _team_block(right_col, "Hidden King", sv_t1_picks, sv_t1_bans)
+    tk.Frame(right_col, bg="#313244", height=1).pack(fill="x", padx=8, pady=(6, 0))
+    _team_block(right_col, "ArchMother",  sv_t2_picks, sv_t2_bans)
+    tk.Frame(right_col, bg="#313244", height=2).pack(fill="x", pady=(6, 0))
 
     def _update_slot_vars():
-        """Sync StringVars with the current draft_slots state."""
+        """Sync StringVars with the current draft_manager.slots state."""
+        slots = draft_manager.slots
         for i, v in enumerate(sv_t1_picks):
-            v.set(draft_slots.team1_picks[i] or EMPTY_SLOT)
+            v.set(slots.team1_picks[i] or EMPTY_SLOT)
         for i, v in enumerate(sv_t1_bans):
-            v.set(draft_slots.team1_bans[i] or EMPTY_SLOT)
+            v.set(slots.team1_bans[i] or EMPTY_SLOT)
         for i, v in enumerate(sv_t2_picks):
-            v.set(draft_slots.team2_picks[i] or EMPTY_SLOT)
+            v.set(slots.team2_picks[i] or EMPTY_SLOT)
         for i, v in enumerate(sv_t2_bans):
-            v.set(draft_slots.team2_bans[i] or EMPTY_SLOT)
+            v.set(slots.team2_bans[i] or EMPTY_SLOT)
 
     print(f"Window created: {WINDOW_WIDTH}x{WINDOW_HEIGHT}")
     print("-" * 50)
@@ -425,9 +457,13 @@ def main():
                 is_locked = now < unlock_at
                 sv_locked.set("Locked" if is_locked else "Unlocked")
                 locked_lbl.config(fg=LOCKED_FG if is_locked else UNLOCKED_FG)
+                sv_draft_step.set(draft_manager.step_label())
+                sv_draft_action.set(draft_manager.current_label())
             else:
                 sv_locked.set("—")
                 locked_lbl.config(fg=WIN_FG)
+                sv_draft_step.set("—")
+                sv_draft_action.set("—")
             _update_slot_vars()
             tk_root.update()
 
@@ -464,17 +500,21 @@ def main():
                 for event in events:
                     if btn_team1_first.is_clicked(event):
                         first_team = 1
+                        draft_manager.start(first_team)
                         app_state = "draft"
                         listener = keyboard.Listener(on_press=on_press, on_release=on_release)
                         listener.start()
-                        print(f"Manual Draft started — Team 1 (Hidden King) picks first.")
+                        print(f"Manual Draft started — Hidden King picks first.")
+                        print(f"Step 1: {draft_manager.current_label()}")
                         print("-" * 50)
                     elif btn_team2_first.is_clicked(event):
                         first_team = 2
+                        draft_manager.start(first_team)
                         app_state = "draft"
                         listener = keyboard.Listener(on_press=on_press, on_release=on_release)
                         listener.start()
-                        print(f"Manual Draft started — Team 2 (ArchMother) picks first.")
+                        print(f"Manual Draft started — ArchMother picks first.")
+                        print(f"Step 1: {draft_manager.current_label()}")
                         print("-" * 50)
 
                 screen.fill((20, 20, 30))
@@ -495,29 +535,52 @@ def main():
                 hero = pending_hero
                 pending_hero = None
 
+                # Capture action type BEFORE assigning (assign advances the step)
+                action_type = draft_manager.current_action_type() or "pick"
+                result = draft_manager.assign(hero.name)
+                if result:
+                    team, action = result
+                    team_name = TEAM_NAMES[team]
+                    print(f"[{draft_manager.step}/{len(DRAFT_ORDER)}] "
+                          f"{team_name}: {action.capitalize()} -> {hero.name.capitalize()}")
+                    if not draft_manager.is_complete:
+                        print(f"Next \u2014 Step {draft_manager.step + 1}: {draft_manager.current_label()}")
+                    else:
+                        print("Draft complete.")
+
                 if hero.name not in hero_cache:
                     try:
                         hero_cache[hero.name] = load_hero_surfaces(hero)
                     except Exception as e:
                         print(f"Failed to load surfaces for '{hero.name}': {e}")
-                        hero_cache[hero.name] = (None, None)
+                        hero_cache[hero.name] = (None, None, None)
 
-                render_surf, card_surf = hero_cache[hero.name]
-                active_hero   = hero
-                display_state = "render"
-                unlock_at     = float('inf')
-                play_select_voice_line(hero)
+                render_surf, card_surf, crit_surf = hero_cache[hero.name]
+                active_hero = hero
+                unlock_at   = float('inf')
 
-            # Transition render -> card when the voice line finishes
-            if display_state == "render" and not pygame.mixer.music.get_busy():
-                display_state = "card"
-                unlock_at     = now + CARD_LOCKOUT_MS
+                if action_type == "ban":
+                    display_state = "crit"
+                else:
+                    display_state = "render"
+
+                play_voice_line(hero, action_type)
+
+            # Transitions when voice line finishes
+            if not pygame.mixer.music.get_busy():
+                if display_state == "render":
+                    display_state = "card"
+                    unlock_at     = now + CARD_LOCKOUT_MS
+                elif display_state == "crit" and unlock_at == float('inf'):
+                    unlock_at     = now + CARD_LOCKOUT_MS
 
             # Determine which surface to draw
             if display_state == "render":
                 displayed_surface = render_surf
             elif display_state == "card":
                 displayed_surface = card_surf
+            elif display_state == "crit":
+                displayed_surface = crit_surf
             else:
                 displayed_surface = None
 
