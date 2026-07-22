@@ -28,5 +28,6 @@ HERO_REGISTRY = [
     ("ctrl+6", "kelvin", 0.8),
     ("ctrl+7", "geist", 0.8),
     ("ctrl+8", "lash", 0.8),
+    ("ctrl+9", "mcginnis", 0.8),
     
 ]
