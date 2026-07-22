@@ -24,4 +24,6 @@ HERO_REGISTRY = [
     ("ctrl+2", "haze", 0.8),
     ("ctrl+3", "holliday", 0.8),
     ("ctrl+4", "infernus", 0.8),
+    ("ctrl+5", "ivy", 0.8),
+    
 ]

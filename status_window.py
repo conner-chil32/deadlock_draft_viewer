@@ -44,7 +44,10 @@ class StatusWindow:
 
         self.root = tk.Tk()
         self.root.title("Draft Viewer \u2014 Status")
-        self.root.geometry("820x390")
+        # Width scales with the number of 10-hero chunks in the keybind column
+        _chunks = max(1, (len(self._hero_names) + 9) // 10)
+        _width  = 300 + 340 + _chunks * 215
+        self.root.geometry(f"{_width}x390")
         self.root.resizable(False, False)
         self.root.configure(bg=self.WIN_BG)
         self.root.protocol("WM_DELETE_WINDOW", lambda: None)
@@ -116,17 +119,28 @@ class StatusWindow:
         self._sep(col, (6, 0))
 
     def _build_mid(self, col):
+        CHUNK = 10  # heroes per sub-column
         self._sep(col, (8, 4))
         tk.Label(col, text="  Hero Keybinds", bg=self.WIN_BG, fg=self.LBL_FG,
                  font=self.FONT_TEAM, anchor="w").pack(fill="x", padx=10)
 
-        for combo, name, _ in HERO_REGISTRY:
-            row = tk.Frame(col, bg=self.WIN_BG)
-            row.pack(fill="x", padx=10, pady=2)
-            tk.Label(row, text=self._fmt_combo(combo), bg=self.WIN_BG, fg=self.WIN_FG,
-                     font=self.FONT_KEY,  width=10, anchor="w").pack(side="left")
-            tk.Label(row, text=self._hero_display_name(name), bg=self.WIN_BG, fg=self.DIM_FG,
-                     font=self.FONT_DESC, anchor="w").pack(side="left")
+        entries = list(HERO_REGISTRY)
+        chunks  = [entries[i:i + CHUNK] for i in range(0, len(entries), CHUNK)]
+
+        # Place each chunk side-by-side in a horizontal frame
+        row_frame = tk.Frame(col, bg=self.WIN_BG)
+        row_frame.pack(fill="x", padx=4, pady=2)
+
+        for chunk in chunks:
+            sub = tk.Frame(row_frame, bg=self.WIN_BG)
+            sub.pack(side="left", anchor="n", padx=6)
+            for combo, name, _ in chunk:
+                entry = tk.Frame(sub, bg=self.WIN_BG)
+                entry.pack(fill="x", pady=2)
+                tk.Label(entry, text=self._fmt_combo(combo), bg=self.WIN_BG, fg=self.WIN_FG,
+                         font=self.FONT_KEY,  width=10, anchor="w").pack(side="left")
+                tk.Label(entry, text=self._hero_display_name(name), bg=self.WIN_BG, fg=self.DIM_FG,
+                         font=self.FONT_DESC, anchor="w").pack(side="left")
 
         self._sep(col, (6, 0))
 
