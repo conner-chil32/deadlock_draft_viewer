@@ -10,6 +10,7 @@ from draft import DRAFT_ORDER, DraftManager, DraftSlots, TEAM_NAMES
 from hero import Hero
 from heroes import HERO_REGISTRY
 from keybinds import KeybindManager
+from draft_overlay import DraftOverlayWindow
 from menu import Button
 from status_window import StatusWindow
 
@@ -28,6 +29,10 @@ SOLID_TEST_COLOR = (0, 0, 0)
 
 # How long (ms) the lockout persists after the card is shown.
 CARD_LOCKOUT_MS = 2000
+
+# Minimum time (ms) the render image is held on screen.
+# Actual hold = max(RENDER_MIN_MS, voice_line_duration).
+RENDER_MIN_MS = 10_000
 
 # Global state
 window_open = True
@@ -153,6 +158,7 @@ def on_release(key):
         print(f"Error handling key release: {e}")
 
 
+
 def scale_to_fit(surface, max_width, max_height):
     """Scale a surface to fit within bounds, preserving aspect ratio."""
     width, height = surface.get_size()
@@ -162,20 +168,15 @@ def scale_to_fit(surface, max_width, max_height):
 
 
 def load_hero_surfaces(hero):
-    """
-    Load and return (render_surface, card_surface, crit_surface) for a hero.
-    All three are independently scaled to fit the window.
-    """
-    render_raw = pygame.image.load(str(hero.get_asset("render"))).convert_alpha()
-    render_surf = scale_to_fit(render_raw, WINDOW_WIDTH, WINDOW_HEIGHT)
-
-    card_raw = pygame.image.load(str(hero.get_asset("card"))).convert_alpha()
-    card_surf = scale_to_fit(card_raw, WINDOW_WIDTH, WINDOW_HEIGHT)
-
-    crit_raw = pygame.image.load(str(hero.get_asset("crit"))).convert_alpha()
-    crit_surf = scale_to_fit(crit_raw, WINDOW_WIDTH, WINDOW_HEIGHT)
-
-    return render_surf, card_surf, crit_surf
+    """Load and return (render, card, crit) surfaces scaled to fit the main window."""
+    render_raw  = pygame.image.load(str(hero.get_asset("render"))).convert_alpha()
+    card_raw    = pygame.image.load(str(hero.get_asset("card"))).convert_alpha()
+    crit_raw    = pygame.image.load(str(hero.get_asset("crit"))).convert_alpha()
+    return (
+        scale_to_fit(render_raw, WINDOW_WIDTH, WINDOW_HEIGHT),
+        scale_to_fit(card_raw,   WINDOW_WIDTH, WINDOW_HEIGHT),
+        scale_to_fit(crit_raw,   WINDOW_WIDTH, WINDOW_HEIGHT),
+    )
 
 
 def play_voice_line(hero, voice_type: str):
@@ -262,14 +263,19 @@ def main():
     hero_cache = {}
 
     # Display state machine  ("idle" | "render" | "card" | "crit")
-    display_state  = "idle"
-    active_hero    = None
-    render_surf    = None
-    card_surf      = None
-    crit_surf      = None
+    display_state    = "idle"
+    active_hero      = None
+    render_surf      = None
+    card_surf        = None
+    crit_surf        = None
+    render_started_at = 0   # ticks when current render began
 
-    listener      = None  # Started only when Manual Draft is chosen
-    status_window = StatusWindow(
+    listener      = None   # Started only when Manual Draft is chosen
+    draft_overlay = None    # Created when draft mode is entered
+    status_window = None    # Created when draft mode is entered
+
+    # Shared args for StatusWindow so we don't repeat them in each branch
+    _sw_kwargs = dict(
         hero_names=list(hero_map.keys()),
         on_hero_select=lambda name: activate_hero(hero_map[name]) if name in hero_map else None,
     )
@@ -283,10 +289,11 @@ def main():
             now = pygame.time.get_ticks()
             events = pygame.event.get()
 
-            status_window.update(
-                app_state, solid_background, active_hero,
-                display_state, now, unlock_at, draft_manager
-            )
+            if status_window is not None:
+                status_window.update(
+                    app_state, solid_background, active_hero,
+                    display_state, now, unlock_at, draft_manager
+                )
 
             for event in events:
                 if event.type == pygame.QUIT:
@@ -303,7 +310,7 @@ def main():
                     if btn_manual.is_clicked(event):
                         app_state = "team_select"
                     elif btn_import.is_clicked(event):
-                        import_draft(status_window.root)
+                        import_draft(None)
 
                 screen.fill((20, 20, 30))
                 title_surf = title_font.render("Deadlock Draft Viewer", True, (220, 220, 220))
@@ -322,7 +329,9 @@ def main():
                     if btn_team1_first.is_clicked(event):
                         first_team = 1
                         draft_manager.start(first_team)
-                        app_state = "draft"
+                        app_state     = "draft"
+                        draft_overlay = DraftOverlayWindow()
+                        status_window = StatusWindow(**_sw_kwargs)
                         listener = keyboard.Listener(on_press=on_press, on_release=on_release)
                         listener.start()
                         print(f"Manual Draft started — Hidden King picks first.")
@@ -331,7 +340,9 @@ def main():
                     elif btn_team2_first.is_clicked(event):
                         first_team = 2
                         draft_manager.start(first_team)
-                        app_state = "draft"
+                        app_state     = "draft"
+                        draft_overlay = DraftOverlayWindow()
+                        status_window = StatusWindow(**_sw_kwargs)
                         listener = keyboard.Listener(on_press=on_press, on_release=on_release)
                         listener.start()
                         print(f"Manual Draft started — ArchMother picks first.")
@@ -377,35 +388,26 @@ def main():
                         hero_cache[hero.name] = (None, None, None)
 
                 render_surf, card_surf, crit_surf = hero_cache[hero.name]
-                active_hero = hero
-                unlock_at   = float('inf')
-
-                if action_type == "ban":
-                    display_state = "crit"
-                else:
-                    display_state = "render"
-
+                active_hero      = hero
+                unlock_at        = float('inf')
+                display_state    = "crit" if action_type == "ban" else "render"
+                render_started_at = now
                 play_voice_line(hero, action_type)
 
             # Transitions when voice line finishes
+            # Render holds for max(RENDER_MIN_MS, voice_line_duration).
             if not pygame.mixer.music.get_busy():
                 if display_state == "render":
-                    display_state = "card"
-                    unlock_at     = now + CARD_LOCKOUT_MS
+                    if now - render_started_at >= RENDER_MIN_MS:
+                        display_state = "card"
+                        unlock_at     = now + CARD_LOCKOUT_MS
                 elif display_state == "crit" and unlock_at == float('inf'):
-                    unlock_at     = now + CARD_LOCKOUT_MS
+                    unlock_at = now + CARD_LOCKOUT_MS
 
-            # Determine which surface to draw
-            if display_state == "render":
-                displayed_surface = render_surf
-            elif display_state == "card":
-                displayed_surface = card_surf
-            elif display_state == "crit":
-                displayed_surface = crit_surf
-            else:
-                displayed_surface = None
+            # Main window only shows the render image (card/crit live in the overlay)
+            displayed_surface = render_surf if display_state == "render" else None
 
-            # Draw — fill based on current background mode
+            # Draw main window
             if solid_background:
                 screen.fill(SOLID_TEST_COLOR)
             elif TRANSPARENT_BACKGROUND:
@@ -417,6 +419,11 @@ def main():
                 rect = displayed_surface.get_rect(center=(WINDOW_WIDTH // 2, WINDOW_HEIGHT // 2))
                 screen.blit(displayed_surface, rect)
 
+            # Update the draft overlay every frame
+            if draft_overlay is not None:
+                draft_overlay.update(now, draft_manager.slots, hero_map, solid_background,
+                                     voice_playing=pygame.mixer.music.get_busy())
+
             pygame.display.flip()
             clock.tick(60)
 
@@ -425,7 +432,10 @@ def main():
     finally:
         if listener:
             listener.stop()
-        status_window.destroy()
+        if draft_overlay:
+            draft_overlay.destroy()
+        if status_window:
+            status_window.destroy()
         pygame.quit()
         sys.exit()
 
