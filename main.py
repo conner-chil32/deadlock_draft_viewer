@@ -32,7 +32,9 @@ CARD_LOCKOUT_MS = 2000
 
 # Minimum time (ms) the render image is held on screen.
 # Actual hold = max(RENDER_MIN_MS, voice_line_duration).
-RENDER_MIN_MS = 5_000
+RENDER_MIN_MS  = 7_000
+FADE_IN_MS     = 250    # duration of the fade-in
+FADE_OUT_MS    = 250    # duration of the fade-out
 
 # Global state
 window_open = True
@@ -113,9 +115,9 @@ def make_window_transparent(hwnd: int) -> None:
 
 def activate_hero(hero):
     """
-    Request a hero to be displayed. Ignored during the lockout period
-    (voice line playing + 2 s after card appears) or once the draft is
-    complete. Safe to call from the key listener thread.
+    Request a hero to be displayed. Ignored if the hero is already in the
+    draft, if the draft is complete, or during the lockout period.
+    Safe to call from the key listener thread.
     """
     global pending_hero
     if draft_manager.is_complete:
@@ -123,6 +125,14 @@ def activate_hero(hero):
         return
     if pygame.time.get_ticks() < unlock_at:
         print(f"Locked — ignoring '{hero.name}'")
+        return
+    slots = draft_manager.slots
+    already_drafted = (
+        slots.team1_picks + slots.team2_picks +
+        slots.team1_bans  + slots.team2_bans
+    )
+    if hero.name in already_drafted:
+        print(f"'{hero.name}' already in draft — ignoring")
         return
     pending_hero = hero
 
@@ -268,7 +278,10 @@ def main():
     render_surf      = None
     card_surf        = None
     crit_surf        = None
-    render_started_at = 0   # ticks when current render began
+    render_started_at  = 0      # ticks when current render began
+    render_fade        = "idle"  # "idle" | "in" | "visible" | "out"
+    render_alpha       = 0       # current surface alpha (0-255)
+    render_fade_out_at = 0       # ticks when fade-out began
 
     listener      = None   # Started only when Manual Draft is chosen
     draft_overlay = None    # Created when draft mode is entered
@@ -388,24 +401,41 @@ def main():
                         hero_cache[hero.name] = (None, None, None)
 
                 render_surf, card_surf, crit_surf = hero_cache[hero.name]
-                active_hero      = hero
-                unlock_at        = float('inf')
-                display_state    = "crit" if action_type == "ban" else "render"
+                active_hero       = hero
+                unlock_at         = float('inf')
+                display_state     = "crit" if action_type == "ban" else "render"
                 render_started_at = now
+                render_fade       = "in"
+                render_alpha      = 0
                 play_voice_line(hero, action_type)
 
-            # Transitions when voice line finishes
-            # Render holds for max(RENDER_MIN_MS, voice_line_duration).
-            if not pygame.mixer.music.get_busy():
-                if display_state == "render":
-                    if now - render_started_at >= RENDER_MIN_MS:
+            # --- Render fade state machine ---
+            if display_state == "render":
+                if render_fade == "in":
+                    elapsed      = now - render_started_at
+                    render_alpha = min(255, int(255 * elapsed / FADE_IN_MS))
+                    if render_alpha >= 255:
+                        render_fade = "visible"
+
+                elif render_fade == "visible":
+                    voice_done = not pygame.mixer.music.get_busy()
+                    elapsed    = now - render_started_at
+                    if voice_done and elapsed >= RENDER_MIN_MS:
+                        render_fade        = "out"
+                        render_fade_out_at = now
+
+                elif render_fade == "out":
+                    elapsed      = now - render_fade_out_at
+                    render_alpha = max(0, 255 - int(255 * elapsed / FADE_OUT_MS))
+                    if render_alpha <= 0:
                         display_state = "card"
                         unlock_at     = now + CARD_LOCKOUT_MS
-                elif display_state == "crit" and unlock_at == float('inf'):
-                    unlock_at = now + CARD_LOCKOUT_MS
+                        render_fade   = "idle"
 
-            # Main window only shows the render image (card/crit live in the overlay)
-            displayed_surface = render_surf if display_state == "render" else None
+            # Crit transition when voice line finishes
+            elif display_state == "crit" and not pygame.mixer.music.get_busy():
+                if unlock_at == float('inf'):
+                    unlock_at = now + CARD_LOCKOUT_MS
 
             # Draw main window
             if solid_background:
@@ -415,9 +445,13 @@ def main():
             else:
                 screen.fill((0, 0, 0))
 
-            if displayed_surface is not None:
-                rect = displayed_surface.get_rect(center=(WINDOW_WIDTH // 2, WINDOW_HEIGHT // 2))
-                screen.blit(displayed_surface, rect)
+            # Render shown with current fade alpha; set_alpha() multiplies
+            # with per-pixel alpha so transparent areas stay transparent.
+            if display_state == "render" and render_surf is not None:
+                render_surf.set_alpha(render_alpha)
+                rect = render_surf.get_rect(center=(WINDOW_WIDTH // 2, WINDOW_HEIGHT // 2))
+                screen.blit(render_surf, rect)
+                render_surf.set_alpha(255)  # reset for cache reuse
 
             # Update the draft overlay every frame
             if draft_overlay is not None:
