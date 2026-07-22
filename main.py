@@ -211,10 +211,13 @@ def main():
     """Initialize and run the application."""
     global window_open, pending_hero, unlock_at, app_state, first_team
 
-    # Pre-initialise the mixer before pygame.init() so the audio subsystem is
-    # fully ready before the first voice line plays, preventing a cut-off.
-    pygame.mixer.pre_init(frequency=44100, size=-16, channels=2, buffer=512)
+    # Pre-initialise the mixer before pygame.init().
+    # buffer=2048 gives the MP3 decoder enough headroom to avoid start-of-clip
+    # underruns.  The explicit mixer.init() call after pygame.init() ensures the
+    # subsystem is fully ready before the first voice line is loaded.
+    pygame.mixer.pre_init(frequency=44100, size=-16, channels=2, buffer=2048)
     pygame.init()
+    pygame.mixer.init(frequency=44100, size=-16, channels=2, buffer=2048)
 
     flags = 0
     if WINDOW_FRAMELESS:
