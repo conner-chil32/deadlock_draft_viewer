@@ -133,4 +133,15 @@ class KeybindManager:
             return key.char.lower()
         if hasattr(key, 'name'):
             return key.name
+        # When a modifier (e.g. Ctrl) is held, pynput may set char=None but
+        # still populate the virtual key code.  For printable keys (digits,
+        # letters) the vk matches the ASCII code, so chr(vk) recovers the
+        # character and keeps bindings like "ctrl+1" working.
+        if hasattr(key, 'vk') and key.vk is not None:
+            try:
+                ch = chr(key.vk)
+                if ch.isprintable():
+                    return ch.lower()
+            except (ValueError, OverflowError):
+                pass
         return str(key)

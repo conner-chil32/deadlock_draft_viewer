@@ -19,4 +19,6 @@ HERO_REGISTRY = [
     ("shift+7", "doorman", 0.8),
     ("shift+8", "drifter", 0.8),
     ("shift+9", "dynamo", 0.8),
+    ("shift+0", "graves", 0.8),
+    ("ctrl+1", "grey_talon", 0.8),
 ]

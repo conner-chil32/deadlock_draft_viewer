@@ -125,7 +125,7 @@ class StatusWindow:
             row.pack(fill="x", padx=10, pady=2)
             tk.Label(row, text=self._fmt_combo(combo), bg=self.WIN_BG, fg=self.WIN_FG,
                      font=self.FONT_KEY,  width=10, anchor="w").pack(side="left")
-            tk.Label(row, text=name.capitalize(), bg=self.WIN_BG, fg=self.DIM_FG,
+            tk.Label(row, text=self._hero_display_name(name), bg=self.WIN_BG, fg=self.DIM_FG,
                      font=self.FONT_DESC, anchor="w").pack(side="left")
 
         self._sep(col, (6, 0))
@@ -149,7 +149,7 @@ class StatusWindow:
         row.pack(fill="x", padx=8, pady=6)
 
         self._sv_selected_hero = tk.StringVar()
-        hero_display = [n.capitalize() for n in self._hero_names]
+        hero_display = [self._hero_display_name(n) for n in self._hero_names]
 
         style = ttk.Style()
         style.theme_use("default")
@@ -194,10 +194,11 @@ class StatusWindow:
         """Called when the operator clicks Submit in the Draft Input section."""
         if not self._on_hero_select:
             return
-        raw = self._sv_selected_hero.get()
+        raw = self._sv_selected_hero.get().strip()
         if not raw:
             return
-        hero_name = raw.lower()
+        # Convert display name back to folder name: 'Grey Talon' -> 'grey_talon'
+        hero_name = raw.lower().replace(" ", "_")
         self._on_hero_select(hero_name)
 
     # ------------------------------------------------------------------
@@ -237,6 +238,13 @@ class StatusWindow:
     def _fmt_combo(combo: str) -> str:
         return "+".join(p.capitalize() for p in combo.split("+"))
 
+    @staticmethod
+    def _hero_display_name(name: str) -> str:
+        """Convert a hero folder name to a readable display name.
+        'grey_talon' -> 'Grey Talon',  'abrams' -> 'Abrams'
+        """
+        return name.replace("_", " ").title()
+
     # ------------------------------------------------------------------
     # Per-frame update
     # ------------------------------------------------------------------
@@ -247,7 +255,7 @@ class StatusWindow:
         """Refresh all labels and pump the tkinter event loop."""
         self.sv_state.set(app_state.replace("_", " ").title())
         self.sv_bg_mode.set("Solid (OBS)" if solid_background else "Chroma Key")
-        self.sv_hero.set(active_hero.name.capitalize() if active_hero else "\u2014")
+        self.sv_hero.set(self._hero_display_name(active_hero.name) if active_hero else "\u2014")
         self.sv_hero_state.set(display_state.capitalize() if app_state == "draft" else "\u2014")
 
         if app_state == "draft":
@@ -266,14 +274,16 @@ class StatusWindow:
         self.root.update()
 
     def _update_slots(self, slots) -> None:
+        def _fmt(val):
+            return self._hero_display_name(val) if val else self.EMPTY_SLOT
         for i, v in enumerate(self.sv_t1_picks):
-            v.set(slots.team1_picks[i] or self.EMPTY_SLOT)
+            v.set(_fmt(slots.team1_picks[i]))
         for i, v in enumerate(self.sv_t1_bans):
-            v.set(slots.team1_bans[i] or self.EMPTY_SLOT)
+            v.set(_fmt(slots.team1_bans[i]))
         for i, v in enumerate(self.sv_t2_picks):
-            v.set(slots.team2_picks[i] or self.EMPTY_SLOT)
+            v.set(_fmt(slots.team2_picks[i]))
         for i, v in enumerate(self.sv_t2_bans):
-            v.set(slots.team2_bans[i] or self.EMPTY_SLOT)
+            v.set(_fmt(slots.team2_bans[i]))
 
     # ------------------------------------------------------------------
     # Lifecycle
