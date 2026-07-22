@@ -21,4 +21,6 @@ HERO_REGISTRY = [
     ("shift+9", "dynamo", 0.8),
     ("shift+0", "graves", 0.8),
     ("ctrl+1", "grey_talon", 0.8),
+    ("ctrl+2", "haze", 0.8),
+    
 ]
