@@ -32,7 +32,7 @@ CARD_LOCKOUT_MS = 2000
 
 # Minimum time (ms) the render image is held on screen.
 # Actual hold = max(RENDER_MIN_MS, voice_line_duration).
-RENDER_MIN_MS = 10_000
+RENDER_MIN_MS = 5_000
 
 # Global state
 window_open = True
@@ -422,7 +422,7 @@ def main():
             # Update the draft overlay every frame
             if draft_overlay is not None:
                 draft_overlay.update(now, draft_manager.slots, hero_map, solid_background,
-                                     voice_playing=pygame.mixer.music.get_busy())
+                                     display_state=display_state)
 
             pygame.display.flip()
             clock.tick(60)

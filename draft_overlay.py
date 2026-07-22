@@ -58,10 +58,9 @@ class DraftOverlayWindow:
         # Also stores the scaled size so we can centre the image in the slot.
         self._tex_cache: dict = {}
 
-        # Track when the current voice line started so gloat only shows
-        # for slots filled DURING this voice line, not earlier ones.
-        self._voice_started_at:  int  = 0
-        self._was_voice_playing: bool = False
+        # Track when the render phase started so gloat matches render duration.
+        self._render_started_at: int  = 0
+        self._was_render:        bool = False
 
     # ------------------------------------------------------------------
     # Initialisation helpers
@@ -100,22 +99,25 @@ class DraftOverlayWindow:
     # ------------------------------------------------------------------
 
     def update(self, now: int, slots, hero_map: dict,
-               solid_background: bool, voice_playing: bool = False) -> None:
+               solid_background: bool, display_state: str = "idle") -> None:
         """Draw all 16 slots and present the renderer. Call once per frame.
 
-        voice_playing: True while the current hero's voice line is playing.
-                       Pick slots show the gloat image while the voice line
-                       plays; they switch to card once it finishes.
+        display_state: the main window's current display state.
+                       Gloat is shown on the most-recently-filled pick slot
+                       exactly while display_state == 'render', so both
+                       windows transition from gloat/render to card together.
         """
         bg = SOLID_COLOR if solid_background else TRANSPARENT_COLOR
         self._renderer.draw_color = (*bg, 255)
         self._renderer.clear()
 
-        # Record the moment this voice line started so we can ignore
-        # pick slots that were filled in earlier voice sessions.
-        if voice_playing and not self._was_voice_playing:
-            self._voice_started_at = now
-        self._was_voice_playing = voice_playing
+        is_render = display_state == "render"
+
+        # Record when the render phase starts so we can ignore pick slots
+        # that were filled in earlier rounds (prevents gloat flash).
+        if is_render and not self._was_render:
+            self._render_started_at = now
+        self._was_render = is_render
 
         for team, picks, bans in [
             (1, slots.team1_picks, slots.team1_bans),
@@ -133,10 +135,11 @@ class DraftOverlayWindow:
                     key = (team, "pick", idx)
                     if key not in self._slot_first_seen:
                         self._slot_first_seen[key] = now
-                    # Gloat only for slots filled during THIS voice line.
+                    # Gloat only while render is active AND this slot was
+                    # filled during the current render session.
                     show_gloat = (
-                        voice_playing
-                        and self._slot_first_seen[key] >= self._voice_started_at
+                        is_render
+                        and self._slot_first_seen[key] >= self._render_started_at
                     )
                     img_type = "gloat" if show_gloat else "card"
                     entry = self._tex_cache[hero.name][img_type]
