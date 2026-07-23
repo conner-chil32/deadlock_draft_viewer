@@ -35,4 +35,9 @@ HERO_REGISTRY = [
     ("alt+3", "paige", 0.8),
     ("alt+4", "paradox", 0.8),
     ("alt+5", "pocket", 0.8),
+    ("alt+6", "rem", 0.8),
+    ("alt+7", "seven", 0.8),
+    ("alt+8", "shiv", 0.8),
+    ("alt+9", "silver", 0.8),
+    ("alt+0", "sinclair", 0.8),
 ]
