@@ -34,5 +34,5 @@ HERO_REGISTRY = [
     ("alt+2", "mo_krill", 0.8),
     ("alt+3", "paige", 0.8),
     ("alt+4", "paradox", 0.8),
-    
+    ("alt+5", "pocket", 0.8),
 ]
