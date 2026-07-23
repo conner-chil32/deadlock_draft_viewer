@@ -30,5 +30,9 @@ HERO_REGISTRY = [
     ("ctrl+8", "lash", 0.8),
     ("ctrl+9", "mcginnis", 0.8),
     ("ctrl+0", "mina", 0.8),
+    ("alt+1", "mirage", 0.8),
+    ("alt+2", "mo_krill", 0.8),
+    ("alt+3", "paige", 0.8),
+    ("alt+4", "paradox", 0.8),
     
 ]
