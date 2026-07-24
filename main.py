@@ -15,8 +15,8 @@ from menu import Button
 from status_window import StatusWindow
 
 # Configuration parameters
-WINDOW_WIDTH = 1920
-WINDOW_HEIGHT = 1080
+WINDOW_WIDTH = 1600
+WINDOW_HEIGHT = 900
 WINDOW_FRAMELESS = False       # Remove title bar / border (recommended for overlays)
 TRANSPARENT_BACKGROUND = True  # Make the empty background see-through
 
