@@ -28,11 +28,11 @@ TRANSPARENT_COLOR = (255, 0, 255)
 SOLID_TEST_COLOR = (0, 0, 0)
 
 # How long (ms) the lockout persists after the card is shown.
-CARD_LOCKOUT_MS = 2000
+CARD_LOCKOUT_MS = 1000
 
 # Minimum time (ms) the render image is held on screen.
 # Actual hold = max(RENDER_MIN_MS, voice_line_duration).
-RENDER_MIN_MS  = 7_000
+RENDER_MIN_MS  = 5_000
 FADE_IN_MS     = 250    # duration of the fade-in
 FADE_OUT_MS    = 250    # duration of the fade-out
 
