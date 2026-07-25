@@ -40,4 +40,8 @@ HERO_REGISTRY = [
     ("alt+8", "shiv", 0.8),
     ("alt+9", "silver", 0.8),
     ("alt+0", "sinclair", 0.8),
+    ("ctrl+alt+1", "venator", 0.8),
+    ("ctrl+alt+2", "victor", 0.8),
+    ("ctrl+alt+3", "vindicta", 0.8),
+    ("ctrl+alt+4", "viscous", 0.8),
 ]
