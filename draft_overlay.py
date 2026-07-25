@@ -6,6 +6,7 @@ except ImportError:
     _SDL2_AVAILABLE = False
 
 from draft import DraftSlots
+from hero import resource_path
 
 # ---------------------------------------------------------------------------
 # Layout constants
@@ -50,6 +51,12 @@ class DraftOverlayWindow:
 
         self._window   = _sdl2_video.Window(self.WIN_TITLE, size=(w, h))
         self._renderer = _sdl2_video.Renderer(self._window)
+
+        try:
+            icon_surf = pygame.image.load(str(resource_path("assets/heroes/abrams/icon.png")))
+            self._window.set_icon(icon_surf)
+        except Exception:
+            pass
 
         # slot_key (team, slot_type, slot_idx) -> ticks when hero first appeared
         self._slot_first_seen: dict = {}

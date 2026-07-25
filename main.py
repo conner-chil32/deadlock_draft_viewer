@@ -7,12 +7,15 @@ from tkinter import filedialog
 from pynput import keyboard
 
 from draft import DRAFT_ORDER, DraftManager, DraftSlots, TEAM_NAMES
-from hero import Hero
+from hero import Hero, resource_path
 from heroes import HERO_REGISTRY
 from keybinds import KeybindManager
 from draft_overlay import DraftOverlayWindow
 from menu import Button
 from status_window import StatusWindow
+
+# Application version
+VERSION = "0.0.1"
 
 # Configuration parameters
 WINDOW_WIDTH = 1600
@@ -223,8 +226,11 @@ def main():
     if WINDOW_FRAMELESS:
         flags |= pygame.NOFRAME
 
+    icon_surf = pygame.image.load(str(resource_path("assets/heroes/abrams/icon.png")))
+    pygame.display.set_icon(icon_surf)
+
     screen = pygame.display.set_mode((WINDOW_WIDTH, WINDOW_HEIGHT), flags)
-    pygame.display.set_caption("Deadlock Draft Viewer")
+    pygame.display.set_caption(f"Deadlock Draft Viewer v{VERSION}")
     clock = pygame.time.Clock()
 
     # if TRANSPARENT_BACKGROUND:
@@ -232,8 +238,9 @@ def main():
     #     make_window_transparent(hwnd)
 
     # Fonts
-    title_font  = pygame.font.SysFont("segoeui", 52, bold=True)
-    button_font = pygame.font.SysFont("segoeui", 30)
+    title_font   = pygame.font.SysFont("segoeui", 52, bold=True)
+    button_font  = pygame.font.SysFont("segoeui", 30)
+    version_font = pygame.font.SysFont("segoeui", 18)
 
     # Menu buttons (centred in the window)
     btn_w, btn_h = 320, 70
@@ -294,6 +301,7 @@ def main():
     _sw_kwargs = dict(
         hero_names=list(hero_map.keys()),
         on_hero_select=lambda name: activate_hero(hero_map[name]) if name in hero_map else None,
+        icon_path=resource_path("assets/icon.ico"),
     )
 
     print(f"Window created: {WINDOW_WIDTH}x{WINDOW_HEIGHT}")
@@ -333,6 +341,8 @@ def main():
                 screen.blit(title_surf, title_surf.get_rect(center=(cx, cy - 160)))
                 btn_manual.draw(screen)
                 btn_import.draw(screen)
+                ver_surf = version_font.render(f"v{VERSION}", True, (120, 120, 140))
+                screen.blit(ver_surf, ver_surf.get_rect(bottomright=(WINDOW_WIDTH - 12, WINDOW_HEIGHT - 12)))
                 pygame.display.flip()
                 clock.tick(60)
                 continue

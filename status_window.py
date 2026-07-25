@@ -33,7 +33,7 @@ class StatusWindow:
     EMPTY_SLOT = "\u2500\u2500\u2500\u2500\u2500\u2500"   # ──────
     SLOT_W     = 7
 
-    def __init__(self, hero_names: list = None, on_hero_select=None):
+    def __init__(self, hero_names: list = None, on_hero_select=None, icon_path=None):
         """
         hero_names    : list of hero name strings to populate the Draft Input dropdown.
         on_hero_select: callback(hero_name: str) called when the operator submits
@@ -51,6 +51,11 @@ class StatusWindow:
         self.root.resizable(False, False)
         self.root.configure(bg=self.WIN_BG)
         self.root.protocol("WM_DELETE_WINDOW", lambda: None)
+        if icon_path:
+            try:
+                self.root.iconbitmap(str(icon_path))
+            except Exception:
+                pass
 
         self._init_vars()
         self._build()
