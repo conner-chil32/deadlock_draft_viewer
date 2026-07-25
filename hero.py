@@ -1,5 +1,19 @@
 import os
+import sys
 from pathlib import Path
+
+
+def resource_path(relative_path: str) -> Path:
+    """
+    Resolve a path relative to the project root, both during normal execution
+    and when running as a PyInstaller-bundled .exe.
+
+    PyInstaller extracts bundled files to a temp directory stored in
+    sys._MEIPASS at runtime.  When running from source, we fall back to
+    the directory that contains this file (hero.py lives at the project root).
+    """
+    base = getattr(sys, "_MEIPASS", Path(__file__).resolve().parent)
+    return Path(base) / relative_path
 
 
 class Hero:
@@ -16,7 +30,7 @@ class Hero:
         """
         self.name = name.lower()
         self.volume = max(0.0, min(1.0, volume))  # Clamp to valid range
-        self.assets_dir = Path(assets_dir) / self.name
+        self.assets_dir = resource_path(assets_dir) / self.name
         
         # Define all asset paths
         self.background = self.assets_dir / "background.png"
