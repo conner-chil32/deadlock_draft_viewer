@@ -9,6 +9,25 @@
 # volume        : voice line playback volume, 0.0 – 1.0
 # ---------------------------------------------------------------------------
 
+# Maps JSON/API display names to internal folder names where they differ.
+# Keys must be lowercased. Extend this when new mismatches are found.
+HERO_NAME_ALIASES = {
+    "lady geist":  "geist",
+    "mo & krill":  "mo_krill",
+    "mo and krill": "mo_krill",
+    "the doorman": "doorman",
+    "vyper":       "viper",
+}
+
+
+def resolve_hero_name(display_name: str) -> str:
+    """Convert a JSON display name to the internal folder name used by hero_map."""
+    key = display_name.lower()
+    if key in HERO_NAME_ALIASES:
+        return HERO_NAME_ALIASES[key]
+    return key.replace(" ", "_")
+
+
 HERO_REGISTRY = [
     ("shift+1", "abrams", 0.8),
     ("shift+2", "apollo", 0.8),

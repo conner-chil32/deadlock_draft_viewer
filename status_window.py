@@ -277,7 +277,7 @@ class StatusWindow:
         self.sv_hero.set(self._hero_display_name(active_hero.name) if active_hero else "\u2014")
         self.sv_hero_state.set(display_state.capitalize() if app_state == "draft" else "\u2014")
 
-        if app_state == "draft":
+        if app_state in ("draft", "import_draft"):
             is_locked = now < unlock_at
             self.sv_locked.set("Locked" if is_locked else "Unlocked")
             self._locked_lbl.config(fg=self.LOCKED_FG if is_locked else self.UNLOCKED_FG)

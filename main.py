@@ -8,14 +8,14 @@ from pynput import keyboard
 
 from draft import DRAFT_ORDER, DraftManager, DraftSlots, TEAM_NAMES
 from hero import Hero, resource_path
-from heroes import HERO_REGISTRY
+from heroes import HERO_REGISTRY, resolve_hero_name
 from keybinds import KeybindManager
 from draft_overlay import DraftOverlayWindow
 from menu import Button
 from status_window import StatusWindow
 
 # Application version
-VERSION = "0.0.1"
+VERSION = "0.0.2"
 
 # Configuration parameters
 WINDOW_WIDTH = 1600
@@ -39,6 +39,11 @@ RENDER_MIN_MS  = 5_000
 FADE_IN_MS     = 250    # duration of the fade-in
 FADE_OUT_MS    = 250    # duration of the fade-out
 
+# Import draft playback timing (ms) — edit to change wait durations
+IMPORT_START_DELAY_MS = 5_000   # delay before the first action fires after import
+IMPORT_BAN_WAIT_MS    = 5_000   # wait after a ban crit is shown before the next action
+IMPORT_PICK_WAIT_MS   = 7_000   # wait after a pick card is shown before the next action
+
 # Global state
 window_open = True
 solid_background = False  # Toggle with F1
@@ -60,7 +65,7 @@ draft_manager = DraftManager()
 
 
 def import_draft(parent=None):
-    """Open a file picker, load a draft JSON, and print the actions to the console."""
+    """Open a file picker, parse a draft JSON, and return the action list (or None)."""
     file_path = filedialog.askopenfilename(
         parent=parent,
         title="Select Draft JSON",
@@ -69,33 +74,21 @@ def import_draft(parent=None):
 
     if not file_path:
         print("Import cancelled.")
-        return
+        return None
 
     try:
         with open(file_path, "r", encoding="utf-8") as f:
             data = json.load(f)
     except Exception as e:
         print(f"Failed to load JSON: {e}")
-        return
+        return None
 
     if not isinstance(data, list):
         print("Unexpected JSON format: expected a list of draft actions.")
-        return
+        return None
 
-    TEAM_NAMES = {
-        "team1": "Hidden King",
-        "team2": "ArchMother",
-    }
-
-    print(f"Imported draft from: {file_path}")
-    print("-" * 50)
-    for entry in data:
-        team_raw    = entry.get("team", "?")
-        team_name   = TEAM_NAMES.get(team_raw, str(team_raw))
-        action_type = entry.get("type", "?").capitalize()
-        hero        = entry.get("hero", "?")
-        print(f"{team_name}: {action_type} -> {hero}")
-    print("-" * 50)
+    print(f"Loaded draft: {file_path} ({len(data)} actions)")
+    return data
 
 
 def make_window_transparent(hwnd: int) -> None:
@@ -297,6 +290,11 @@ def main():
     draft_overlay = None    # Created when draft mode is entered
     status_window = None    # Created when draft mode is entered
 
+    # Import draft playback state
+    import_queue         = []          # list of (Hero, action_type) to replay
+    import_next_at       = 0           # ticks when to trigger the next import action
+    import_active_action = None        # action_type of the currently-displaying step
+
     # Shared args for StatusWindow so we don't repeat them in each branch
     _sw_kwargs = dict(
         hero_names=list(hero_map.keys()),
@@ -323,7 +321,7 @@ def main():
                 if event.type == pygame.QUIT:
                     window_open = False
                 if event.type == pygame.KEYDOWN and event.key == pygame.K_ESCAPE:
-                    if app_state == "menu":
+                    if app_state in ("menu", "import_draft"):
                         window_open = False
 
             # ------------------------------------------------------------------
@@ -334,7 +332,30 @@ def main():
                     if btn_manual.is_clicked(event):
                         app_state = "team_select"
                     elif btn_import.is_clicked(event):
-                        import_draft(None)
+                        data = import_draft(None)
+                        if data:
+                            first_entry_team = data[0].get("team", "team1")
+                            first_team = 1 if first_entry_team == "team1" else 2
+                            draft_manager.start(first_team)
+
+                            import_queue.clear()
+                            for entry in data:
+                                h_name      = entry.get("hero", "")
+                                action_type = entry.get("type", "pick").lower()
+                                folder_name = resolve_hero_name(h_name)
+                                if folder_name in hero_map:
+                                    import_queue.append((hero_map[folder_name], action_type))
+                                else:
+                                    print(f"[WARN] Import: unknown hero '{h_name}' — skipped")
+
+                            if import_queue:
+                                draft_overlay        = DraftOverlayWindow()
+                                status_window        = StatusWindow(**_sw_kwargs)
+                                import_next_at       = now + IMPORT_START_DELAY_MS
+                                import_active_action = None
+                                app_state            = "import_draft"
+                                print(f"Import Draft — {len(import_queue)} actions queued.")
+                                print("-" * 50)
 
                 screen.fill((20, 20, 30))
                 title_surf = title_font.render("Deadlock Draft Viewer", True, (220, 220, 220))
@@ -388,8 +409,8 @@ def main():
             # DRAFT STATE
             # ------------------------------------------------------------------
 
-            # Pick up a pending hero from the key listener thread
-            if pending_hero is not None:
+            # Pick up a pending hero from the key listener thread (manual draft only)
+            if app_state == "draft" and pending_hero is not None:
                 hero = pending_hero
                 pending_hero = None
 
@@ -406,6 +427,8 @@ def main():
                     else:
                         print("Draft complete.")
 
+                play_voice_line(hero, action_type)
+
                 if hero.name not in hero_cache:
                     try:
                         hero_cache[hero.name] = load_hero_surfaces(hero)
@@ -420,7 +443,67 @@ def main():
                 render_started_at = now
                 render_fade       = "in"
                 render_alpha      = 0
-                play_voice_line(hero, action_type)
+
+            # ------------------------------------------------------------------
+            # IMPORT DRAFT — auto-advance through the queue on a timer
+            # ------------------------------------------------------------------
+            if app_state == "import_draft":
+                if now >= import_next_at:
+                    if import_queue:
+                        import_next_at       = float('inf')
+                        next_hero, next_action_type = import_queue.pop(0)
+                        import_active_action = next_action_type
+
+                        result = draft_manager.assign(next_hero.name)
+                        if result:
+                            team, action = result
+                            team_name = TEAM_NAMES[team]
+                            print(f"[Import {draft_manager.step}/{len(DRAFT_ORDER)}] "
+                                  f"{team_name}: {action.capitalize()} -> "
+                                  f"{next_hero.name.capitalize()}")
+
+                        play_voice_line(next_hero, next_action_type)
+
+                        if next_hero.name not in hero_cache:
+                            try:
+                                hero_cache[next_hero.name] = load_hero_surfaces(next_hero)
+                            except Exception as e:
+                                print(f"Failed to load surfaces for '{next_hero.name}': {e}")
+                                hero_cache[next_hero.name] = (None, None, None)
+
+                        render_surf, card_surf, crit_surf = hero_cache[next_hero.name]
+                        active_hero       = next_hero
+                        unlock_at         = float('inf')
+                        display_state     = "crit" if next_action_type == "ban" else "render"
+                        render_started_at = now
+                        render_fade       = "in"
+                        render_alpha      = 0
+                    else:
+                        import_next_at       = float('inf')
+                        import_active_action = None
+                        print("Import draft complete.")
+
+                # Detect when the current step has settled, then start the wait timer
+                elif import_active_action == "ban" and display_state == "crit":
+                    if (unlock_at != float('inf') and now >= unlock_at
+                            and import_next_at == float('inf')):
+                        import_next_at = now + IMPORT_BAN_WAIT_MS
+
+                elif import_active_action == "pick" and display_state == "card":
+                    if now >= unlock_at and import_next_at == float('inf'):
+                        import_next_at = now + IMPORT_PICK_WAIT_MS
+
+                # While waiting, preload the next hero's surfaces so the cache
+                # is warm when the timer fires — no blocking after play_voice_line().
+                if (import_queue
+                        and import_next_at != float('inf')
+                        and import_queue[0][0].name not in hero_cache):
+                    nxt = import_queue[0][0]
+                    try:
+                        hero_cache[nxt.name] = load_hero_surfaces(nxt)
+                    except Exception as e:
+                        print(f"[Import] Preload failed for '{nxt.name}': {e}")
+                        hero_cache[nxt.name] = (None, None, None)
 
             # --- Render fade state machine ---
             if display_state == "render":
