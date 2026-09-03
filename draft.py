@@ -25,6 +25,29 @@ DRAFT_ORDER = [
 ]
 
 
+def _compute_step_slot_indices() -> list:
+    """
+    For each step, precompute which slot index (0-based) it fills: the
+    number of earlier steps sharing the same relative team and action type.
+
+    This makes normal step-based assignment independent of the *current*
+    contents of the slots array, so a manual removal/edit of an earlier
+    slot (which can leave a None "hole" before the current step) never
+    causes a later normal pick/ban to land in the wrong slot.
+    """
+    counters: dict = {}
+    indices = []
+    for relative, action in DRAFT_ORDER:
+        key = (relative, action)
+        indices.append(counters.get(key, 0))
+        counters[key] = counters.get(key, 0) + 1
+    return indices
+
+
+# STEP_SLOT_INDEX[step] -> the slot index that step's pick/ban belongs in.
+STEP_SLOT_INDEX = _compute_step_slot_indices()
+
+
 # ---------------------------------------------------------------------------
 # Slot storage
 # ---------------------------------------------------------------------------
@@ -53,21 +76,19 @@ class DraftSlots:
     def _bans(self, team: int) -> list:
         return self.team1_bans if team == 1 else self.team2_bans
 
-    def assign_pick(self, team: int, hero_name: str) -> bool:
-        slots = self._picks(team)
-        for i, s in enumerate(slots):
-            if s is None:
-                slots[i] = hero_name
-                return True
-        return False
+    # ------------------------------------------------------------------
+    # Direct slot access (manual corrections, bypasses draft-order logic)
+    # ------------------------------------------------------------------
 
-    def assign_ban(self, team: int, hero_name: str) -> bool:
-        slots = self._bans(team)
-        for i, s in enumerate(slots):
-            if s is None:
-                slots[i] = hero_name
-                return True
-        return False
+    def get_slot(self, team: int, action_type: str, index: int):
+        """Return the hero name at a specific slot, or None if empty."""
+        slots = self._picks(team) if action_type == "pick" else self._bans(team)
+        return slots[index]
+
+    def set_slot(self, team: int, action_type: str, index: int, hero_name) -> None:
+        """Directly overwrite a specific slot (hero_name may be None to clear it)."""
+        slots = self._picks(team) if action_type == "pick" else self._bans(team)
+        slots[index] = hero_name
 
 
 # ---------------------------------------------------------------------------
@@ -143,9 +164,21 @@ class DraftManager:
             return None
         team   = self.current_team()
         action = self.current_action_type()
-        if action == "pick":
-            self.slots.assign_pick(team, hero_name)
-        else:
-            self.slots.assign_ban(team, hero_name)
+        index  = STEP_SLOT_INDEX[self.step]
+        self.slots.set_slot(team, action, index, hero_name)
         self.step += 1
         return team, action
+
+    # ------------------------------------------------------------------
+    # Manual corrections (replace an already-filled slot)
+    # ------------------------------------------------------------------
+    # Bypasses draft-order/step logic entirely -- for fixing an operator
+    # mistake on a slot that was already filled, not for advancing the draft.
+
+    def get_hero(self, team: int, action_type: str, index: int):
+        """Return the hero currently in a specific slot, or None if empty."""
+        return self.slots.get_slot(team, action_type, index)
+
+    def set_hero(self, team: int, action_type: str, index: int, hero_name: str) -> None:
+        """Directly overwrite an already-filled slot with a different hero."""
+        self.slots.set_slot(team, action_type, index, hero_name)
