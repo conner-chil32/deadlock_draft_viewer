@@ -32,6 +32,15 @@ WINDOW_HEIGHT = 900
 WINDOW_FRAMELESS = False       # Remove title bar / border (recommended for overlays)
 TRANSPARENT_BACKGROUND = True  # Make the empty background see-through
 
+# Resolution choices offered on the Settings screen. More settings will be
+# added here later.
+RESOLUTION_PRESETS = [
+    (1280, 720),
+    (1600, 900),
+    (1920, 1080),
+    (2560, 1440),
+]
+
 # Chroma-key color used as the transparent background.
 # Magenta is chosen because it is extremely unlikely to appear in hero artwork.
 TRANSPARENT_COLOR = (255, 0, 255)
@@ -265,6 +274,7 @@ def main():
     """Initialize and run the application."""
     global window_open, pending_hero, unlock_at, app_state, first_team
     global edit_target, pending_edit_target
+    global WINDOW_WIDTH, WINDOW_HEIGHT
 
     # Pre-initialise the mixer before pygame.init().
     # buffer=2048 gives the MP3 decoder enough headroom to avoid start-of-clip
@@ -300,28 +310,45 @@ def main():
     button_font  = pygame.font.SysFont("segoeui", 30)
     version_font = pygame.font.SysFont("segoeui", 18)
 
-    # Menu buttons (centred in the window)
-    btn_w, btn_h = 320, 70
-    cx = WINDOW_WIDTH  // 2
-    cy = WINDOW_HEIGHT // 2
-    btn_manual = Button(
-        (cx - btn_w // 2, cy - btn_h - 20, btn_w, btn_h),
-        "Manual Draft", button_font
-    )
-    btn_import = Button(
-        (cx - btn_w // 2, cy + 20, btn_w, btn_h),
-        "Import Draft", button_font
-    )
+    # Menu / team-select / settings button layouts are rebuilt from scratch
+    # whenever the window resolution changes (see the SETTINGS STATE below),
+    # so they're built by small helpers instead of being one-off literals.
+    def layout_menu_buttons():
+        cx = WINDOW_WIDTH  // 2
+        cy = WINDOW_HEIGHT // 2
+        btn_w, btn_h, gap = 320, 70, 20
+        total_h = 3 * btn_h + 2 * gap
+        top = cy - total_h // 2
+        manual = Button((cx - btn_w // 2, top, btn_w, btn_h), "Manual Draft", button_font)
+        imp    = Button((cx - btn_w // 2, top + (btn_h + gap), btn_w, btn_h), "Import Draft", button_font)
+        sett   = Button((cx - btn_w // 2, top + 2 * (btn_h + gap), btn_w, btn_h), "Settings", button_font)
+        return cx, cy, manual, imp, sett
 
-    # Team-select buttons
-    btn_team1_first = Button(
-        (cx - btn_w // 2, cy - btn_h - 20, btn_w, btn_h),
-        "Team 1 First", button_font
-    )
-    btn_team2_first = Button(
-        (cx - btn_w // 2, cy + 20, btn_w, btn_h),
-        "Team 2 First", button_font
-    )
+    def layout_team_select_buttons():
+        cx = WINDOW_WIDTH  // 2
+        cy = WINDOW_HEIGHT // 2
+        btn_w, btn_h = 320, 70
+        team1 = Button((cx - btn_w // 2, cy - btn_h - 20, btn_w, btn_h), "Team 1 First", button_font)
+        team2 = Button((cx - btn_w // 2, cy + 20, btn_w, btn_h), "Team 2 First", button_font)
+        return cx, cy, team1, team2
+
+    def layout_settings_buttons():
+        cx = WINDOW_WIDTH  // 2
+        cy = WINDOW_HEIGHT // 2
+        btn_w, btn_h, gap = 260, 50, 14
+        n = len(RESOLUTION_PRESETS)
+        total_h = n * btn_h + (n - 1) * gap
+        top = cy - total_h // 2 + 20
+        presets = []
+        for i, (w, h) in enumerate(RESOLUTION_PRESETS):
+            rect = (cx - btn_w // 2, top + i * (btn_h + gap), btn_w, btn_h)
+            presets.append((Button(rect, f"{w} x {h}", button_font), (w, h)))
+        back = Button((cx - 100, top + total_h + 30, 200, 50), "Back", button_font)
+        return cx, cy, presets, back
+
+    cx, cy, btn_manual, btn_import, btn_settings = layout_menu_buttons()
+    _, _, btn_team1_first, btn_team2_first = layout_team_select_buttons()
+    _, _, settings_preset_buttons, btn_settings_back = layout_settings_buttons()
 
     # Load heroes, register keybinds, and build the name→object lookup
     hero_map: dict = {}
@@ -396,7 +423,9 @@ def main():
                 if event.type == pygame.QUIT:
                     window_open = False
                 if event.type == pygame.KEYDOWN and event.key == pygame.K_ESCAPE:
-                    if app_state in ("menu", "import_draft"):
+                    if app_state == "settings":
+                        app_state = "menu"
+                    elif app_state in ("menu", "import_draft"):
                         window_open = False
 
             # ------------------------------------------------------------------
@@ -406,6 +435,8 @@ def main():
                 for event in events:
                     if btn_manual.is_clicked(event):
                         app_state = "team_select"
+                    elif btn_settings.is_clicked(event):
+                        app_state = "settings"
                     elif btn_import.is_clicked(event):
                         data = import_draft()
                         if data:
@@ -438,11 +469,53 @@ def main():
 
                 screen.fill((20, 20, 30))
                 title_surf = title_font.render("Deadlock Draft Viewer", True, (220, 220, 220))
-                screen.blit(title_surf, title_surf.get_rect(center=(cx, cy - 160)))
+                screen.blit(title_surf, title_surf.get_rect(center=(cx, cy - 190)))
                 btn_manual.draw(screen)
                 btn_import.draw(screen)
+                btn_settings.draw(screen)
                 ver_surf = version_font.render(f"v{VERSION}", True, (120, 120, 140))
                 screen.blit(ver_surf, ver_surf.get_rect(bottomright=(WINDOW_WIDTH - 12, WINDOW_HEIGHT - 12)))
+                pygame.display.flip()
+                clock.tick(60)
+                continue
+
+            # ------------------------------------------------------------------
+            # SETTINGS STATE
+            # ------------------------------------------------------------------
+            if app_state == "settings":
+                for event in events:
+                    if btn_settings_back.is_clicked(event):
+                        app_state = "menu"
+                    else:
+                        for btn, (w, h) in settings_preset_buttons:
+                            if btn.is_clicked(event) and (w, h) != (WINDOW_WIDTH, WINDOW_HEIGHT):
+                                WINDOW_WIDTH, WINDOW_HEIGHT = w, h
+                                screen = pygame.display.set_mode((WINDOW_WIDTH, WINDOW_HEIGHT), flags)
+                                if _SDL2_AVAILABLE:
+                                    main_window = _sdl2_video.Window.from_display_module()
+                                # Cached hero surfaces are scaled to the old
+                                # resolution; drop them so they're rebuilt.
+                                hero_cache.clear()
+                                cx, cy, btn_manual, btn_import, btn_settings = layout_menu_buttons()
+                                _, _, btn_team1_first, btn_team2_first = layout_team_select_buttons()
+                                _, _, settings_preset_buttons, btn_settings_back = layout_settings_buttons()
+                                print(f"Resolution changed to {WINDOW_WIDTH}x{WINDOW_HEIGHT}")
+                                break
+
+                screen.fill((20, 20, 30))
+                title_surf = title_font.render("Settings", True, (220, 220, 220))
+                screen.blit(title_surf, title_surf.get_rect(center=(cx, cy - 190)))
+                subtitle_surf = version_font.render(
+                    f"Resolution \u2014 current: {WINDOW_WIDTH} x {WINDOW_HEIGHT}",
+                    True, (180, 180, 190)
+                )
+                screen.blit(subtitle_surf, subtitle_surf.get_rect(center=(cx, cy - 130)))
+                for btn, (w, h) in settings_preset_buttons:
+                    btn.draw(screen)
+                    if (w, h) == (WINDOW_WIDTH, WINDOW_HEIGHT):
+                        tag_surf = version_font.render("current", True, (166, 227, 161))
+                        screen.blit(tag_surf, tag_surf.get_rect(midleft=(btn.rect.right + 12, btn.rect.centery)))
+                btn_settings_back.draw(screen)
                 pygame.display.flip()
                 clock.tick(60)
                 continue
