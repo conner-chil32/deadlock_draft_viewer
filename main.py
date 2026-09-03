@@ -740,7 +740,36 @@ def main():
         sys.exit()
 
 
+def _selftest_pynput() -> int:
+    """
+    Diagnostic: construct and start a pynput keyboard.Listener exactly as
+    Manual Draft mode does, and report success/failure.
+
+    pynput selects its platform backend (e.g. pynput.keyboard._darwin) via
+    a dynamically computed importlib.import_module() call, which static
+    analyzers like PyInstaller's can't trace -- so it's easy for a frozen
+    build to silently ship without that backend module (or without
+    mac_pynput_fix.py's patch actually taking effect), reintroducing the
+    macOS TIS/TSM main-thread crash. Run this against a built exe with:
+        <executable> --selftest-pynput
+    """
+    import time
+    try:
+        listener = keyboard.Listener(on_press=lambda k: None, on_release=lambda k: None)
+        listener.start()
+        time.sleep(1)
+        listener.stop()
+        listener.join()
+        print("SELFTEST_PYNPUT_OK")
+        return 0
+    except Exception as e:
+        print(f"SELFTEST_PYNPUT_FAILED: {e!r}")
+        return 1
+
+
 if __name__ == "__main__":
+    if len(sys.argv) >= 2 and sys.argv[1] == "--selftest-pynput":
+        sys.exit(_selftest_pynput())
     if len(sys.argv) >= 3 and sys.argv[1] == file_dialog.INTERNAL_FLAG:
         # Re-invoked as an isolated subprocess to show a native file dialog
         # (see file_dialog.py) — run it and exit without starting pygame.

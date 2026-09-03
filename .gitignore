@@ -11,6 +11,7 @@ build/
 
 # PyInstaller
 *.spec
+!DeadlockDraftViewer.spec
 dist/
 build/
 

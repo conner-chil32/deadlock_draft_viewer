@@ -5,15 +5,22 @@ from pathlib import Path
 
 def resource_path(relative_path: str) -> Path:
     """
-    Resolve a path relative to the project root, both during normal execution
-    and when running as a PyInstaller-bundled .exe.
+    Resolve a path relative to the project root when running from source, or
+    relative to the executable's own folder when frozen (PyInstaller).
 
-    PyInstaller extracts bundled files to a temp directory stored in
-    sys._MEIPASS at runtime.  When running from source, we fall back to
-    the directory that contains this file (hero.py lives at the project root).
+    Deliberately does NOT use sys._MEIPASS: in --onefile builds that's a
+    volatile temp directory PyInstaller re-extracts on every launch, so any
+    edits a user made to bundled assets would be silently discarded on
+    restart. Resolving next to the executable instead means the shipped
+    'assets' folder (copied there by build.py, not bundled by PyInstaller)
+    sits in a stable, user-editable location, and edits persist across
+    restarts.
     """
-    base = getattr(sys, "_MEIPASS", Path(__file__).resolve().parent)
-    return Path(base) / relative_path
+    if getattr(sys, "frozen", False):
+        base = Path(sys.executable).resolve().parent
+    else:
+        base = Path(__file__).resolve().parent
+    return base / relative_path
 
 
 class Hero:

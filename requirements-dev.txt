@@ -1,0 +1,4 @@
+-r requirements.txt
+
+# Only needed to produce a distributable build (see build.py / DeadlockDraftViewer.spec).
+pyinstaller>=6.0
