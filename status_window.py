@@ -62,7 +62,7 @@ class StatusWindow:
     HERO_COL_W  = 215   # per-column width in the Hero Keybinds pane
     COLLAPSED_W = 30    # Draft Slots collapsed strip width
     COLLAPSED_H = 30    # Hero Keybinds collapsed strip height
-    TOP_H       = 350   # height of the top row (Status / Draft Slots)
+    TOP_H       = 370   # height of the top row (Status / Draft Slots)
     SEP_W       = 2      # separator thickness
     PAD         = 10
     CHUNK       = 10    # heroes per hero-keybinds sub-column
@@ -117,6 +117,33 @@ class StatusWindow:
         self.main_window_visible   = True
         self.draft_overlay_visible = True
 
+        # Whether each team's hero card images are flipped (mirrored) in
+        # the Draft Overlay window. Toggled via the checkbox next to each
+        # team's name in the Draft Slots pane; read by main.py every frame.
+        # ArchMother is flipped by default.
+        self.flip_hidden_king_cards = False
+        self.flip_archmother_cards  = True
+
+        self._font_label = pygame.font.SysFont("Segoe UI", 13, bold=True)
+        self._font_value = pygame.font.SysFont("Consolas", 14)
+        self._font_key   = pygame.font.SysFont("Consolas", 13, bold=True)
+        self._font_desc  = pygame.font.SysFont("Segoe UI", 13)
+        self._font_team  = pygame.font.SysFont("Segoe UI", 14, bold=True)
+        self._font_slot  = pygame.font.SysFont("Consolas", 11)
+
+        # Size pick/ban slots to fit the longest hero display name (e.g.
+        # "Grey Talon"), so names are never truncated; grow the Draft Slots
+        # pane width to match if the default isn't wide enough.
+        longest_w = max(
+            (self._font_slot.size(self._hero_display_name(name))[0]
+             for _, name, _ in HERO_REGISTRY),
+            default=0,
+        )
+        longest_w = max(longest_w, self._font_slot.size(self.EMPTY_SLOT)[0])
+        self._slot_w = longest_w + 14
+        picks_content_w = 55 + 6 * self._slot_w
+        self.MID_W = max(self.MID_W, picks_content_w + 2 * self.PAD)
+
         self._width  = self.LEFT_W + self.MID_W
         self._height = self.TOP_H + self.SEP_W + self._bottom_h
 
@@ -128,13 +155,6 @@ class StatusWindow:
             self._window.set_icon(icon_surf)
         except Exception:
             pass
-
-        self._font_label = pygame.font.SysFont("Segoe UI", 13, bold=True)
-        self._font_value = pygame.font.SysFont("Consolas", 14)
-        self._font_key   = pygame.font.SysFont("Consolas", 13, bold=True)
-        self._font_desc  = pygame.font.SysFont("Segoe UI", 13)
-        self._font_team  = pygame.font.SysFont("Segoe UI", 14, bold=True)
-        self._font_slot  = pygame.font.SysFont("Consolas", 11)
 
     # ------------------------------------------------------------------
     # Drawing helpers
@@ -249,16 +269,17 @@ class StatusWindow:
         y = self._draw_toggle_row(x, y, "Main Window", self.main_window_visible, "main_window")
         y = self._draw_toggle_row(x, y, "Draft Overlay", self.draft_overlay_visible, "draft_overlay")
 
-    def _draw_toggle_row(self, x: int, y: int, label: str, visible: bool, toggle_id: str) -> int:
-        """Draw a label + Hide/Show button. Clicking it flips the named
-        application window's visibility flag (handled in _handle_events)."""
+    def _draw_toggle_row(self, x: int, y: int, label: str, visible: bool, toggle_id: str,
+                          on_text: str = "Hide", off_text: str = "Show") -> int:
+        """Draw a label + toggle button. Clicking it flips the flag named by
+        toggle_id (handled in _handle_events)."""
         self._draw_text(label, (x, y), self._font_label, self.LBL_FG)
 
         btn_w, btn_h = 52, 20
         btn_x = x + 150
         rect = pygame.Rect(btn_x, y - 2, btn_w, btn_h)
         self._fill(rect, self.SLOT_BG)
-        text = "Hide" if visible else "Show"
+        text = on_text if visible else off_text
         color = self.BTN_ON_FG if visible else self.BTN_OFF_FG
         self._draw_text(text, (btn_x + 8, y - 1), self._font_desc, color)
         self._app_toggle_rects[toggle_id] = rect
@@ -269,9 +290,11 @@ class StatusWindow:
         y = self._draw_pane_header(x0, 0, "Draft Slots", "mid")
         x = x0 + self.PAD
         self._slot_edit_rects = []
-        y = self._draw_team_block(x, y, 1, "Hidden King", slots.team1_picks, slots.team1_bans)
+        y = self._draw_team_block(x, y, 1, "Hidden King", slots.team1_picks, slots.team1_bans,
+                                   self.flip_hidden_king_cards, "flip_hidden_king")
         y += 8
-        y = self._draw_team_block(x, y, 2, "ArchMother", slots.team2_picks, slots.team2_bans)
+        y = self._draw_team_block(x, y, 2, "ArchMother", slots.team2_picks, slots.team2_bans,
+                                   self.flip_archmother_cards, "flip_archmother")
         y += 16
         self._draw_text("Click a filled slot to replace it", (x, y), self._font_desc, self.DIM_FG)
         y += 16
@@ -280,8 +303,20 @@ class StatusWindow:
                 else "Expand Hero Keybinds (below) to select a hero")
         self._draw_text(hint, (x, y), self._font_desc, self.DIM_FG)
 
-    def _draw_team_block(self, x, y, team, team_label, picks, bans) -> int:
-        self._draw_text(team_label, (x, y), self._font_team, self.WIN_FG)
+    def _draw_team_block(self, x, y, team, team_label, picks, bans,
+                          flip_checked, flip_toggle_id) -> int:
+        label_w, _ = self._draw_text(team_label, (x, y), self._font_team, self.WIN_FG)
+
+        sep_x = x + label_w + 8
+        sep_w, _ = self._draw_text("| Flip:", (sep_x, y + 2), self._font_desc, self.DIM_FG)
+
+        box_size = 14
+        box_rect = pygame.Rect(sep_x + sep_w + 6, y + 3, box_size, box_size)
+        self._fill(box_rect, self.BTN_ON_FG if flip_checked else self.SLOT_BG)
+        self._renderer.draw_color = (*self.WIN_FG, 255)
+        self._renderer.draw_rect(box_rect)
+        self._app_toggle_rects[flip_toggle_id] = box_rect
+
         y += 20
         y = self._draw_slot_row(x, y, "Picks:", team, "pick", picks, self.WIN_FG)
         y = self._draw_slot_row(x, y, "Bans:", team, "ban", bans, self.SLOT_BAN_FG)
@@ -290,12 +325,17 @@ class StatusWindow:
     def _draw_slot_row(self, x, y, label, team, action_type, values, fg) -> int:
         self._draw_text(label, (x, y), self._font_label, self.LBL_FG)
         slot_x = x + 55
-        slot_w = 42
+        slot_w = self._slot_w
         for idx, v in enumerate(values):
             rect = pygame.Rect(slot_x, y - 2, slot_w - 4, 20)
             self._fill(rect, self.SLOT_BG)
-            text = self._fit_slot_text(self._hero_display_name(v)) if v else self.EMPTY_SLOT
-            self._draw_text(text, (rect.x + 2, rect.y + 2), self._font_slot, fg)
+            text = self._hero_display_name(v) if v else self.EMPTY_SLOT
+            text_w, text_h = self._font_slot.size(text)
+            text_pos = (
+                rect.x + max(0, (rect.width - text_w) // 2),
+                rect.y + max(0, (rect.height - text_h) // 2),
+            )
+            self._draw_text(text, text_pos, self._font_slot, fg)
             if v:
                 if self._edit_target == (team, action_type, idx):
                     self._renderer.draw_color = (*self.ARMED_FG, 255)
@@ -350,6 +390,10 @@ class StatusWindow:
                         self.main_window_visible = not self.main_window_visible
                     elif toggle_id == "draft_overlay":
                         self.draft_overlay_visible = not self.draft_overlay_visible
+                    elif toggle_id == "flip_hidden_king":
+                        self.flip_hidden_king_cards = not self.flip_hidden_king_cards
+                    elif toggle_id == "flip_archmother":
+                        self.flip_archmother_cards = not self.flip_archmother_cards
                     handled = True
                     break
             if handled:
@@ -445,10 +489,6 @@ class StatusWindow:
         'grey_talon' -> 'Grey Talon',  'abrams' -> 'Abrams'
         """
         return name.replace("_", " ").title()
-
-    @staticmethod
-    def _fit_slot_text(text: str, max_chars: int = 6) -> str:
-        return text if len(text) <= max_chars else text[:max_chars - 1] + "\u2026"
 
     # ------------------------------------------------------------------
     # Lifecycle

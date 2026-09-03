@@ -69,6 +69,10 @@ class DraftOverlayWindow:
         self._render_started_at: int  = 0
         self._was_render:        bool = False
 
+        # team -> whether that team's hero card images are horizontally
+        # mirrored (picks and bans alike). ArchMother (team 2) defaults on.
+        self.flip_team = {1: False, 2: True}
+
     # ------------------------------------------------------------------
     # Initialisation helpers
     # ------------------------------------------------------------------
@@ -93,13 +97,19 @@ class DraftOverlayWindow:
             k: _texture(k) for k in ("card", "gloat", "crit")
         }
 
-    def _blit(self, tex_entry, cx: int, cy: int) -> None:
-        """Draw a (Texture, size) entry centred on (cx, cy)."""
+    def _blit(self, tex_entry, cx: int, cy: int, flip: bool = False) -> None:
+        """Draw a (Texture, size) entry centred on (cx, cy), optionally
+        mirrored horizontally."""
         tex, (w, h) = tex_entry
         if tex is None:
             return
         dest = pygame.Rect(cx - w // 2, cy - h // 2, w, h)
-        self._renderer.blit(tex, dest)
+        tex.draw(dstrect=dest, flip_x=flip)
+
+    def set_flip(self, team: int, flipped: bool) -> None:
+        """Set whether a team's hero card images (picks and bans) are
+        horizontally mirrored."""
+        self.flip_team[team] = flipped
 
     # ------------------------------------------------------------------
     # Per-frame update
@@ -132,6 +142,7 @@ class DraftOverlayWindow:
         ]:
             row = 0 if team == 1 else 1
             cy  = row * SLOT_H + SLOT_H // 2
+            flip = self.flip_team.get(team, False)
 
             # ---- Pick slots ----
             for idx, hero_name in enumerate(picks):
@@ -152,7 +163,7 @@ class DraftOverlayWindow:
                     entry = self._tex_cache[hero.name][img_type]
                     if entry[0] is None:          # fall back to card if gloat missing
                         entry = self._tex_cache[hero.name]["card"]
-                    self._blit(entry, cx, cy)
+                    self._blit(entry, cx, cy, flip=flip)
 
             # ---- Ban slots ----
             for idx, hero_name in enumerate(bans):
@@ -160,7 +171,7 @@ class DraftOverlayWindow:
                 if hero_name and hero_name in hero_map:
                     hero = hero_map[hero_name]
                     self._load_images(hero)
-                    self._blit(self._tex_cache[hero.name]["crit"], cx, cy)
+                    self._blit(self._tex_cache[hero.name]["crit"], cx, cy, flip=flip)
 
         self._renderer.present()
 

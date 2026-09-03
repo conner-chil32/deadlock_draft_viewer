@@ -388,6 +388,9 @@ def main():
                 if draft_overlay is not None and status_window.draft_overlay_visible != draft_overlay_shown:
                     draft_overlay_shown = status_window.draft_overlay_visible
                     (draft_overlay.show() if draft_overlay_shown else draft_overlay.hide())
+                if draft_overlay is not None:
+                    draft_overlay.set_flip(1, status_window.flip_hidden_king_cards)
+                    draft_overlay.set_flip(2, status_window.flip_archmother_cards)
 
             for event in events:
                 if event.type == pygame.QUIT:
