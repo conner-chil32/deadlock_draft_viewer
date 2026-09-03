@@ -3,9 +3,18 @@ import json
 import pygame
 import random
 import sys
-from tkinter import filedialog
 from pynput import keyboard
 
+try:
+    from pygame._sdl2 import video as _sdl2_video
+    _SDL2_AVAILABLE = True
+except ImportError:
+    _SDL2_AVAILABLE = False
+
+import mac_pynput_fix
+mac_pynput_fix.apply()
+
+import file_dialog
 from draft import DRAFT_ORDER, DraftManager, DraftSlots, TEAM_NAMES
 from hero import Hero, resource_path
 from heroes import HERO_REGISTRY, resolve_hero_name
@@ -53,6 +62,17 @@ first_team = None          # Set during team_select; 1 or 2
 # Hero requested by the key listener thread; picked up by the main loop.
 pending_hero = None
 
+# Slot (team, action_type, index) armed for replacement, or None. Set by
+# clicking a filled slot's body in the status window; consumed by the next
+# hero activation instead of the normal draft-order assignment.
+edit_target = None
+
+# Carries edit_target's value alongside pending_hero from activation time
+# through to the main loop's draft-state block, since edit_target itself is
+# cleared immediately once a hero is captured (so the UI stops highlighting
+# it right away).
+pending_edit_target = None
+
 # pygame ticks timestamp after which a new hero activation is allowed.
 # float('inf') while a voice line is playing; set to now+CARD_LOCKOUT_MS on card show.
 unlock_at = 0
@@ -64,13 +84,9 @@ keybind_manager = KeybindManager()
 draft_manager = DraftManager()
 
 
-def import_draft(parent=None):
+def import_draft():
     """Open a file picker, parse a draft JSON, and return the action list (or None)."""
-    file_path = filedialog.askopenfilename(
-        parent=parent,
-        title="Select Draft JSON",
-        filetypes=[("JSON files", "*.json"), ("All files", "*.*")],
-    )
+    file_path = file_dialog.ask_open_json(title="Select Draft JSON")
 
     if not file_path:
         print("Import cancelled.")
@@ -114,8 +130,29 @@ def activate_hero(hero):
     Request a hero to be displayed. Ignored if the hero is already in the
     draft, if the draft is complete, or during the lockout period.
     Safe to call from the key listener thread.
+
+    If a slot is currently armed for replacement (edit_target), this
+    instead captures the hero for that slot, bypassing the draft-order,
+    lock, and completion checks above (see start_slot_edit).
     """
-    global pending_hero
+    global pending_hero, pending_edit_target, edit_target
+
+    if edit_target is not None:
+        team, action_type, index = edit_target
+        slots = draft_manager.slots
+        already_drafted = (
+            slots.team1_picks + slots.team2_picks +
+            slots.team1_bans  + slots.team2_bans
+        )
+        current = draft_manager.get_hero(team, action_type, index)
+        if hero.name in already_drafted and hero.name != current:
+            print(f"'{hero.name}' already in draft — ignoring")
+            return
+        pending_edit_target = edit_target
+        edit_target = None
+        pending_hero = hero
+        return
+
     if draft_manager.is_complete:
         print(f"Draft complete — ignoring '{hero.name}'")
         return
@@ -131,6 +168,27 @@ def activate_hero(hero):
         print(f"'{hero.name}' already in draft — ignoring")
         return
     pending_hero = hero
+
+
+def start_slot_edit(team, action_type, index):
+    """
+    Arm (or disarm, if already armed) a specific slot for replacement by the
+    next hero activation. Manual-draft only, to avoid conflicting with the
+    Import Draft auto-play queue.
+    """
+    global edit_target
+    if app_state != "draft":
+        print("Slot editing is only available during Manual Draft.")
+        return
+    target = (team, action_type, index)
+    if edit_target == target:
+        edit_target = None
+        print("Slot edit cancelled.")
+    else:
+        edit_target = target
+        team_name = TEAM_NAMES[team]
+        print(f"Editing {team_name} {action_type} slot {index + 1} — "
+              f"pick a hero to replace it, or click it again to cancel.")
 
 
 def toggle_background():
@@ -206,6 +264,7 @@ def play_voice_line(hero, voice_type: str):
 def main():
     """Initialize and run the application."""
     global window_open, pending_hero, unlock_at, app_state, first_team
+    global edit_target, pending_edit_target
 
     # Pre-initialise the mixer before pygame.init().
     # buffer=2048 gives the MP3 decoder enough headroom to avoid start-of-clip
@@ -225,6 +284,12 @@ def main():
     screen = pygame.display.set_mode((WINDOW_WIDTH, WINDOW_HEIGHT), flags)
     pygame.display.set_caption(f"Deadlock Draft Viewer v{VERSION}")
     clock = pygame.time.Clock()
+
+    # Wraps the window pygame.display.set_mode() already created, so it can
+    # be hidden/shown from the status window without a second window.
+    main_window = _sdl2_video.Window.from_display_module() if _SDL2_AVAILABLE else None
+    main_window_shown    = True
+    draft_overlay_shown  = True
 
     # if TRANSPARENT_BACKGROUND:
     #     hwnd = pygame.display.get_wm_info()["window"]
@@ -299,7 +364,7 @@ def main():
     _sw_kwargs = dict(
         hero_names=list(hero_map.keys()),
         on_hero_select=lambda name: activate_hero(hero_map[name]) if name in hero_map else None,
-        icon_path=resource_path("assets/icon.ico"),
+        on_slot_edit=start_slot_edit,
     )
 
     print(f"Window created: {WINDOW_WIDTH}x{WINDOW_HEIGHT}")
@@ -314,8 +379,15 @@ def main():
             if status_window is not None:
                 status_window.update(
                     app_state, solid_background, active_hero,
-                    display_state, now, unlock_at, draft_manager
+                    display_state, now, unlock_at, draft_manager, events,
+                    edit_target
                 )
+                if main_window is not None and status_window.main_window_visible != main_window_shown:
+                    main_window_shown = status_window.main_window_visible
+                    (main_window.show() if main_window_shown else main_window.hide())
+                if draft_overlay is not None and status_window.draft_overlay_visible != draft_overlay_shown:
+                    draft_overlay_shown = status_window.draft_overlay_visible
+                    (draft_overlay.show() if draft_overlay_shown else draft_overlay.hide())
 
             for event in events:
                 if event.type == pygame.QUIT:
@@ -332,7 +404,7 @@ def main():
                     if btn_manual.is_clicked(event):
                         app_state = "team_select"
                     elif btn_import.is_clicked(event):
-                        data = import_draft(None)
+                        data = import_draft()
                         if data:
                             first_entry_team = data[0].get("team", "team1")
                             first_team = 1 if first_entry_team == "team1" else 2
@@ -351,6 +423,10 @@ def main():
                             if import_queue:
                                 draft_overlay        = DraftOverlayWindow()
                                 status_window        = StatusWindow(**_sw_kwargs)
+                                main_window_shown     = True
+                                draft_overlay_shown   = True
+                                edit_target           = None
+                                pending_edit_target   = None
                                 import_next_at       = now + IMPORT_START_DELAY_MS
                                 import_active_action = None
                                 app_state            = "import_draft"
@@ -379,6 +455,10 @@ def main():
                         app_state     = "draft"
                         draft_overlay = DraftOverlayWindow()
                         status_window = StatusWindow(**_sw_kwargs)
+                        main_window_shown   = True
+                        draft_overlay_shown = True
+                        edit_target         = None
+                        pending_edit_target = None
                         listener = keyboard.Listener(on_press=on_press, on_release=on_release)
                         listener.start()
                         print(f"Manual Draft started — Hidden King picks first.")
@@ -390,6 +470,10 @@ def main():
                         app_state     = "draft"
                         draft_overlay = DraftOverlayWindow()
                         status_window = StatusWindow(**_sw_kwargs)
+                        main_window_shown   = True
+                        draft_overlay_shown = True
+                        edit_target         = None
+                        pending_edit_target = None
                         listener = keyboard.Listener(on_press=on_press, on_release=on_release)
                         listener.start()
                         print(f"Manual Draft started — ArchMother picks first.")
@@ -414,18 +498,28 @@ def main():
                 hero = pending_hero
                 pending_hero = None
 
-                # Capture action type BEFORE assigning (assign advances the step)
-                action_type = draft_manager.current_action_type() or "pick"
-                result = draft_manager.assign(hero.name)
-                if result:
-                    team, action = result
-                    team_name = TEAM_NAMES[team]
-                    print(f"[{draft_manager.step}/{len(DRAFT_ORDER)}] "
-                          f"{team_name}: {action.capitalize()} -> {hero.name.capitalize()}")
-                    if not draft_manager.is_complete:
-                        print(f"Next \u2014 Step {draft_manager.step + 1}: {draft_manager.current_label()}")
-                    else:
-                        print("Draft complete.")
+                edit_info = pending_edit_target
+                pending_edit_target = None
+
+                if edit_info is not None:
+                    edit_team, action_type, edit_index = edit_info
+                    draft_manager.set_hero(edit_team, action_type, edit_index, hero.name)
+                    team_name = TEAM_NAMES[edit_team]
+                    print(f"[Edit] {team_name}: {action_type.capitalize()} slot "
+                          f"{edit_index + 1} -> {hero.name.capitalize()}")
+                else:
+                    # Capture action type BEFORE assigning (assign advances the step)
+                    action_type = draft_manager.current_action_type() or "pick"
+                    result = draft_manager.assign(hero.name)
+                    if result:
+                        team, action = result
+                        team_name = TEAM_NAMES[team]
+                        print(f"[{draft_manager.step}/{len(DRAFT_ORDER)}] "
+                              f"{team_name}: {action.capitalize()} -> {hero.name.capitalize()}")
+                        if not draft_manager.is_complete:
+                            print(f"Next \u2014 Step {draft_manager.step + 1}: {draft_manager.current_label()}")
+                        else:
+                            print("Draft complete.")
 
                 play_voice_line(hero, action_type)
 
@@ -571,4 +665,9 @@ def main():
 
 
 if __name__ == "__main__":
+    if len(sys.argv) >= 3 and sys.argv[1] == file_dialog.INTERNAL_FLAG:
+        # Re-invoked as an isolated subprocess to show a native file dialog
+        # (see file_dialog.py) — run it and exit without starting pygame.
+        file_dialog.run_internal_dialog(sys.argv[2])
+        sys.exit(0)
     main()

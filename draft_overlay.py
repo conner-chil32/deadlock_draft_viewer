@@ -177,3 +177,15 @@ class DraftOverlayWindow:
             self._window.destroy()
         except Exception:
             pass
+
+    def hide(self) -> None:
+        try:
+            self._window.hide()
+        except Exception:
+            pass
+
+    def show(self) -> None:
+        try:
+            self._window.show()
+        except Exception:
+            pass

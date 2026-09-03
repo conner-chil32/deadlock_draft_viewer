@@ -1,257 +1,439 @@
-import tkinter as tk
-from tkinter import ttk
+import pygame
+try:
+    from pygame._sdl2 import video as _sdl2_video
+    _SDL2_AVAILABLE = True
+except ImportError:
+    _SDL2_AVAILABLE = False
 
-from draft import DraftSlots
+from hero import resource_path
 from heroes import HERO_REGISTRY
 
 
 class StatusWindow:
     """
-    A self-contained tkinter window that shows live draft state.
+    A self-contained pygame/SDL2 window that shows live draft state.
     Call update() once per frame from the main loop.
+
+    This used to be a tkinter window, but tkinter and pygame (SDL) each try
+    to install their own NSApplication subclass as the shared macOS
+    application object. Creating a tkinter window in the same process as an
+    already-initialised pygame display crashes on macOS with
+    'NSInvalidArgumentException: unrecognized selector ... macOSVersion'.
+    Drawing this panel with pygame/SDL2 instead means it shares the same
+    process-wide application object as the rest of the app, so the conflict
+    can't happen.
+
+    Layout is 2x1: Status and Draft Slots share the top row, Hero Keybinds
+    spans the full width on the bottom row. Draft Slots and Hero Keybinds
+    each have a "-" button in their own header that shrinks them to a thin
+    strip (click the strip to expand again); the window resizes to
+    reclaim/give back the space.
+
+    The Status panel also has "Main Window" / "Draft Overlay" Hide/Show
+    buttons. These don't affect this window's own layout -- they set the
+    public main_window_visible / draft_overlay_visible attributes, which
+    the caller (main.py) reads each frame to hide/show those other
+    application windows.
     """
 
-    # Colour palette
-    WIN_BG      = "#1e1e2e"
-    WIN_FG      = "#cdd6f4"
-    LBL_FG      = "#89b4fa"
-    LOCKED_FG   = "#f38ba8"
-    UNLOCKED_FG = "#a6e3a1"
-    DIM_FG      = "#585b70"
-    SEP_COLOR   = "#313244"
-    SLOT_BG     = "#313244"
-    SLOT_BAN_FG = "#f38ba8"
+    WIN_TITLE = "Draft Viewer \u2014 Status"
 
-    # Fonts
-    FONT_LABEL = ("Segoe UI",  9, "bold")
-    FONT_VALUE = ("Consolas", 10)
-    FONT_KEY   = ("Consolas",  9, "bold")
-    FONT_DESC  = ("Segoe UI",  9)
-    FONT_TEAM  = ("Segoe UI",  9, "bold")
-    FONT_SLOT  = ("Consolas",  8)
+    # Colour palette (same values as the old tkinter theme)
+    WIN_BG      = (30,  30,  46)
+    WIN_FG      = (205, 214, 244)
+    LBL_FG      = (137, 180, 250)
+    LOCKED_FG   = (243, 139, 168)
+    UNLOCKED_FG = (166, 227, 161)
+    DIM_FG      = (88,  91,  112)
+    UNAVAIL_FG  = (60,  60,  70)
+    SEP_COLOR   = (49,  50,  68)
+    SLOT_BG     = (49,  50,  68)
+    SLOT_BAN_FG = (243, 139, 168)
+    BTN_ON_FG   = (166, 227, 161)
+    BTN_OFF_FG  = (88,  91,  112)
+    ARMED_FG    = (250, 189, 47)
 
-    EMPTY_SLOT = "\u2500\u2500\u2500\u2500\u2500\u2500"   # ──────
-    SLOT_W     = 7
+    EMPTY_SLOT = "------"
+    EMPTY_DASH = "-"
 
-    def __init__(self, hero_names: list = None, on_hero_select=None, icon_path=None):
+    # Layout constants
+    LEFT_W      = 300   # Status pane width (top-left, not collapsible)
+    MID_W       = 340   # Draft Slots pane width, expanded
+    HERO_COL_W  = 215   # per-column width in the Hero Keybinds pane
+    COLLAPSED_W = 30    # Draft Slots collapsed strip width
+    COLLAPSED_H = 30    # Hero Keybinds collapsed strip height
+    TOP_H       = 350   # height of the top row (Status / Draft Slots)
+    SEP_W       = 2      # separator thickness
+    PAD         = 10
+    CHUNK       = 10    # heroes per hero-keybinds sub-column
+    ROW_H       = 20
+
+    def __init__(self, hero_names: list = None, on_hero_select=None,
+                 on_slot_edit=None):
         """
-        hero_names    : list of hero name strings to populate the Draft Input dropdown.
-        on_hero_select: callback(hero_name: str) called when the operator submits
-                        a hero from the status window UI.
+        hero_names    : list of hero folder names that loaded successfully;
+                        only these are clickable in the Hero Keybinds panel.
+        on_hero_select: callback(hero_name: str) called when the operator
+                        clicks a hero in the status window UI.
+        on_slot_edit  : callback(team, action_type, index) called when the
+                        operator clicks an already-filled slot's body to
+                        arm/disarm it for replacement by the next hero pick.
         """
-        self._hero_names     = hero_names or []
+        if not _SDL2_AVAILABLE:
+            raise RuntimeError(
+                "pygame._sdl2.video is not available. Make sure you are using pygame 2.x."
+            )
+
+        self._hero_names     = set(hero_names or [])
         self._on_hero_select = on_hero_select
-
-        self.root = tk.Tk()
-        self.root.title("Draft Viewer \u2014 Status")
-        # Width scales with the number of 10-hero chunks in the keybind column
-        _chunks = max(1, (len(self._hero_names) + 9) // 10)
-        _width  = 300 + 340 + _chunks * 215
-        self.root.geometry(f"{_width}x390")
-        self.root.resizable(False, False)
-        self.root.configure(bg=self.WIN_BG)
-        self.root.protocol("WM_DELETE_WINDOW", lambda: None)
-        if icon_path:
-            try:
-                self.root.iconbitmap(str(icon_path))
-            except Exception:
-                pass
-
-        self._init_vars()
-        self._build()
-
-    # ------------------------------------------------------------------
-    # StringVar initialisation
-    # ------------------------------------------------------------------
-
-    def _init_vars(self):
-        self.sv_state        = tk.StringVar(value="Menu")
-        self.sv_bg_mode      = tk.StringVar(value="Chroma Key")
-        self.sv_hero         = tk.StringVar(value="\u2014")
-        self.sv_hero_state   = tk.StringVar(value="\u2014")
-        self.sv_locked       = tk.StringVar(value="\u2014")
-        self.sv_draft_step   = tk.StringVar(value="\u2014")
-        self.sv_draft_action = tk.StringVar(value="\u2014")
-
-        self.sv_t1_picks = [tk.StringVar(value=self.EMPTY_SLOT) for _ in range(DraftSlots.NUM_PICKS)]
-        self.sv_t1_bans  = [tk.StringVar(value=self.EMPTY_SLOT) for _ in range(DraftSlots.NUM_BANS)]
-        self.sv_t2_picks = [tk.StringVar(value=self.EMPTY_SLOT) for _ in range(DraftSlots.NUM_PICKS)]
-        self.sv_t2_bans  = [tk.StringVar(value=self.EMPTY_SLOT) for _ in range(DraftSlots.NUM_BANS)]
-
-        self._locked_lbl = None   # Label reference for fg colour changes
-
-    # ------------------------------------------------------------------
-    # Layout builders
-    # ------------------------------------------------------------------
-
-    def _build(self):
-        cols = tk.Frame(self.root, bg=self.WIN_BG)
-        cols.pack(fill="both", expand=True)
-
-        left_col = tk.Frame(cols, bg=self.WIN_BG)
-        left_col.pack(side="left", fill="y")
-        tk.Frame(cols, bg=self.SEP_COLOR, width=2).pack(side="left", fill="y", padx=4)
-        mid_col = tk.Frame(cols, bg=self.WIN_BG)
-        mid_col.pack(side="left", fill="y")
-        tk.Frame(cols, bg=self.SEP_COLOR, width=2).pack(side="left", fill="y", padx=4)
-        right_col = tk.Frame(cols, bg=self.WIN_BG)
-        right_col.pack(side="left", fill="both", expand=True)
-
-        self._build_left(left_col)
-        self._build_right(mid_col)
-        self._build_mid(right_col)
-
-    def _build_left(self, col):
-        self._sep(col, (8, 4))
-        self._row(col, "State:",       self.sv_state)
-        self._row(col, "Background:",  self.sv_bg_mode)
-        self._row(col, "Hero:",        self.sv_hero)
-        self._row(col, "Hero State:",  self.sv_hero_state)
-        self._locked_lbl = self._row(col, "Hero Select:", self.sv_locked)
-        self._row(col, "Draft Step:",  self.sv_draft_step)
-        self._row(col, "Next Action:", self.sv_draft_action)
-
-        self._sep(col, (6, 4))
-        tk.Label(col, text="  Keybinds", bg=self.WIN_BG, fg=self.LBL_FG,
-                 font=self.FONT_TEAM, anchor="w").pack(fill="x", padx=10)
-        for key, desc in [("F1", "Toggle background"), ("ESC", "Exit")]:
-            row = tk.Frame(col, bg=self.WIN_BG)
-            row.pack(fill="x", padx=10, pady=2)
-            tk.Label(row, text=key,  bg=self.WIN_BG, fg=self.WIN_FG,
-                     font=self.FONT_KEY,  width=10, anchor="w").pack(side="left")
-            tk.Label(row, text=desc, bg=self.WIN_BG, fg=self.DIM_FG,
-                     font=self.FONT_DESC, anchor="w").pack(side="left")
-        self._sep(col, (6, 0))
-
-    def _build_mid(self, col):
-        CHUNK = 10  # heroes per sub-column
-        self._sep(col, (8, 4))
-        tk.Label(col, text="  Hero Keybinds", bg=self.WIN_BG, fg=self.LBL_FG,
-                 font=self.FONT_TEAM, anchor="w").pack(fill="x", padx=10)
+        self._on_slot_edit   = on_slot_edit
+        # Currently-armed slot (team, action_type, index) or None; set via
+        # update()'s edit_target argument, supplied by the caller.
+        self._edit_target = None
+        # Rebuilt every frame Draft Slots is expanded: (Rect, team, action_type, index).
+        self._slot_edit_rects = []
 
         entries = list(HERO_REGISTRY)
-        chunks  = [entries[i:i + CHUNK] for i in range(0, len(entries), CHUNK)]
+        self._hero_chunks = [entries[i:i + self.CHUNK] for i in range(0, len(entries), self.CHUNK)]
+        num_chunks = max(1, len(self._hero_chunks))
+        self._hero_pane_w = num_chunks * self.HERO_COL_W
+        max_hero_rows = max((len(c) for c in self._hero_chunks), default=0)
+        # Header (title + "-" button) + subtitle + one row per hero + bottom pad.
+        self._bottom_h = (self.PAD + 24) + 18 + max_hero_rows * self.ROW_H + self.PAD
 
-        # Place each chunk side-by-side in a horizontal frame
-        row_frame = tk.Frame(col, bg=self.WIN_BG)
-        row_frame.pack(fill="x", padx=4, pady=2)
+        # Collapse state for the Draft Slots ("mid") and Hero Keybinds
+        # ("right") panes within this window.
+        self._pane_visible = {"mid": True, "right": True}
+        # Rebuilt every frame: pane_key -> Rect (click-to-collapse/expand).
+        self._pane_toggle_rects = {}
+        # Rebuilt every frame: toggle_id -> Rect, for the Hide/Show buttons
+        # that control the OTHER application windows (see class docstring).
+        self._app_toggle_rects = {}
+        # Rebuilt every frame the hero panel is visible: (Rect, hero_name).
+        self._hero_click_rects = []
 
-        for chunk in chunks:
-            sub = tk.Frame(row_frame, bg=self.WIN_BG)
-            sub.pack(side="left", anchor="n", padx=6)
-            for combo, name, _ in chunk:
-                entry = tk.Frame(sub, bg=self.WIN_BG)
-                entry.pack(fill="x", pady=2)
-                tk.Label(entry, text=self._fmt_combo(combo), bg=self.WIN_BG, fg=self.WIN_FG,
-                         font=self.FONT_KEY,  width=10, anchor="w").pack(side="left")
-                tk.Label(entry, text=self._hero_display_name(name), bg=self.WIN_BG, fg=self.DIM_FG,
-                         font=self.FONT_DESC, anchor="w").pack(side="left")
+        # Visibility of the other application windows, set by clicking the
+        # buttons in the Status panel and read by main.py every frame.
+        self.main_window_visible   = True
+        self.draft_overlay_visible = True
 
-        self._sep(col, (6, 0))
+        self._width  = self.LEFT_W + self.MID_W
+        self._height = self.TOP_H + self.SEP_W + self._bottom_h
 
-    def _build_right(self, col):
-        self._sep(col, (8, 0))
-        tk.Label(col, text="  Draft Slots", bg=self.WIN_BG, fg=self.LBL_FG,
-                 font=self.FONT_TEAM, anchor="w").pack(fill="x", padx=8)
-        self._team_block(col, "Hidden King", self.sv_t1_picks, self.sv_t1_bans)
-        tk.Frame(col, bg=self.SEP_COLOR, height=1).pack(fill="x", padx=8, pady=(6, 0))
-        self._team_block(col, "ArchMother",  self.sv_t2_picks, self.sv_t2_bans)
-        self._sep(col, (6, 4))
-        self._build_draft_input(col)
+        self._window   = _sdl2_video.Window(self.WIN_TITLE, size=(self._width, self._height))
+        self._renderer = _sdl2_video.Renderer(self._window)
 
-    def _build_draft_input(self, col):
-        """Dropdown + Submit button so operators can pick/ban via the status window."""
-        tk.Label(col, text="  Draft Input", bg=self.WIN_BG, fg=self.LBL_FG,
-                 font=self.FONT_TEAM, anchor="w").pack(fill="x", padx=8)
+        try:
+            icon_surf = pygame.image.load(str(resource_path("assets/icon.ico")))
+            self._window.set_icon(icon_surf)
+        except Exception:
+            pass
 
-        row = tk.Frame(col, bg=self.WIN_BG)
-        row.pack(fill="x", padx=8, pady=6)
-
-        self._sv_selected_hero = tk.StringVar()
-        hero_display = [self._hero_display_name(n) for n in self._hero_names]
-
-        style = ttk.Style()
-        style.theme_use("default")
-        style.configure(
-            "DraftInput.TCombobox",
-            fieldbackground=self.SLOT_BG,
-            background=self.SLOT_BG,
-            foreground=self.WIN_FG,
-            selectbackground=self.SLOT_BG,
-            selectforeground=self.WIN_FG,
-        )
-
-        combo = ttk.Combobox(
-            row,
-            textvariable=self._sv_selected_hero,
-            values=hero_display,
-            state="readonly",
-            style="DraftInput.TCombobox",
-            width=14,
-        )
-        if hero_display:
-            combo.current(0)
-        combo.pack(side="left", padx=(0, 6))
-
-        btn = tk.Button(
-            row,
-            text="Submit",
-            bg="#45475a",
-            fg=self.WIN_FG,
-            activebackground="#585b70",
-            activeforeground=self.WIN_FG,
-            font=self.FONT_LABEL,
-            relief="flat",
-            padx=10,
-            command=self._on_submit,
-        )
-        btn.pack(side="left")
-
-        self._sep(col, (4, 0))
-
-    def _on_submit(self):
-        """Called when the operator clicks Submit in the Draft Input section."""
-        if not self._on_hero_select:
-            return
-        raw = self._sv_selected_hero.get().strip()
-        if not raw:
-            return
-        # Convert display name back to folder name: 'Grey Talon' -> 'grey_talon'
-        hero_name = raw.lower().replace(" ", "_")
-        self._on_hero_select(hero_name)
+        self._font_label = pygame.font.SysFont("Segoe UI", 13, bold=True)
+        self._font_value = pygame.font.SysFont("Consolas", 14)
+        self._font_key   = pygame.font.SysFont("Consolas", 13, bold=True)
+        self._font_desc  = pygame.font.SysFont("Segoe UI", 13)
+        self._font_team  = pygame.font.SysFont("Segoe UI", 14, bold=True)
+        self._font_slot  = pygame.font.SysFont("Consolas", 11)
 
     # ------------------------------------------------------------------
-    # Widget helpers
+    # Drawing helpers
     # ------------------------------------------------------------------
 
-    def _sep(self, parent, pady=(4, 4)):
-        tk.Frame(parent, bg=self.SEP_COLOR, height=2).pack(fill="x", pady=pady)
+    def _draw_text(self, text: str, pos, font, color=None) -> tuple:
+        color = color or self.WIN_FG
+        surf = font.render(text, True, color)
+        tex = _sdl2_video.Texture.from_surface(self._renderer, surf)
+        dest = pygame.Rect(pos[0], pos[1], *surf.get_size())
+        self._renderer.blit(tex, dest)
+        return surf.get_size()
 
-    def _row(self, parent, label_text, var) -> tk.Label:
-        frame = tk.Frame(parent, bg=self.WIN_BG)
-        frame.pack(fill="x", padx=10, pady=3)
-        tk.Label(frame, text=label_text, bg=self.WIN_BG, fg=self.LBL_FG,
-                 font=self.FONT_LABEL, anchor="w", width=14).pack(side="left")
-        lbl = tk.Label(frame, textvariable=var, bg=self.WIN_BG,
-                       fg=self.WIN_FG, font=self.FONT_VALUE, anchor="w")
-        lbl.pack(side="left")
-        return lbl
+    def _fill(self, rect, color) -> None:
+        self._renderer.draw_color = (*color, 255)
+        self._renderer.fill_rect(rect)
 
-    def _slot_row(self, parent, label_text, slot_vars, fg):
-        row = tk.Frame(parent, bg=self.WIN_BG)
-        row.pack(fill="x", padx=8, pady=2)
-        tk.Label(row, text=label_text, bg=self.WIN_BG, fg=self.LBL_FG,
-                 font=self.FONT_LABEL, width=5, anchor="w").pack(side="left")
-        for var in slot_vars:
-            tk.Label(row, textvariable=var, bg=self.SLOT_BG, fg=fg,
-                     font=self.FONT_SLOT, width=self.SLOT_W,
-                     relief="flat", padx=2, anchor="center").pack(side="left", padx=1)
+    def _draw_vsep(self, x: int, y: int, height: int) -> None:
+        self._fill(pygame.Rect(x, y, self.SEP_W, height), self.SEP_COLOR)
 
-    def _team_block(self, parent, team_label, pick_vars, ban_vars):
-        tk.Label(parent, text=team_label, bg=self.WIN_BG, fg=self.WIN_FG,
-                 font=self.FONT_TEAM, anchor="w").pack(fill="x", padx=8, pady=(8, 0))
-        self._slot_row(parent, "Picks:", pick_vars, self.WIN_FG)
-        self._slot_row(parent, "Bans:",  ban_vars,  self.SLOT_BAN_FG)
+    def _draw_hsep(self, y: int) -> None:
+        self._fill(pygame.Rect(0, y, self._width, self.SEP_W), self.SEP_COLOR)
+
+    def _draw_pane_title(self, x0: int, y0: int, title: str) -> int:
+        """Draw a plain pane title with no collapse button (used for the
+        always-visible Status pane). Returns the y content should start at."""
+        self._draw_text(title, (x0 + self.PAD, y0 + self.PAD), self._font_team, self.LBL_FG)
+        return y0 + self.PAD + 24
+
+    def _draw_pane_header(self, x0: int, y0: int, title: str, pane_key: str) -> int:
+        """Draw a pane's title plus a "-" button that collapses it. Returns
+        the y coordinate content should start at."""
+        y = y0 + self.PAD
+        self._draw_text(title, (x0 + self.PAD, y), self._font_team, self.LBL_FG)
+
+        btn_size = 16
+        btn_x = x0 + self.PAD + 150
+        rect = pygame.Rect(btn_x, y - 2, btn_size, btn_size)
+        self._fill(rect, self.SLOT_BG)
+        self._draw_text("-", (btn_x + 5, y - 3), self._font_team, self.WIN_FG)
+        self._pane_toggle_rects[pane_key] = rect
+
+        return y0 + self.PAD + 24
+
+    def _draw_collapsed_v(self, x0: int, w: int, h: int, title: str, pane_key: str) -> None:
+        """Draw a vertically-collapsed pane as a narrow clickable strip with
+        a rotated label and a "+" expand indicator."""
+        self._pane_toggle_rects[pane_key] = pygame.Rect(x0, 0, w, h)
+
+        self._draw_text("+", (x0 + w // 2 - 4, self.PAD), self._font_team, self.LBL_FG)
+
+        surf = self._font_team.render(title, True, self.DIM_FG)
+        rotated = pygame.transform.rotate(surf, 90)
+        tex = _sdl2_video.Texture.from_surface(self._renderer, rotated)
+        rw, rh = rotated.get_size()
+        dest = pygame.Rect(x0 + max(0, (w - rw) // 2), max(0, (h - rh) // 2), rw, rh)
+        self._renderer.blit(tex, dest)
+
+    def _draw_collapsed_h(self, y0: int, h: int, title: str, pane_key: str) -> None:
+        """Draw a horizontally-collapsed pane as a thin, full-width strip
+        with a "+" expand indicator."""
+        rect = pygame.Rect(0, y0, self._width, h)
+        self._pane_toggle_rects[pane_key] = rect
+
+        text_y = y0 + (h - 16) // 2
+        self._draw_text("+", (self.PAD, text_y), self._font_team, self.LBL_FG)
+        self._draw_text(title, (self.PAD + 20, text_y), self._font_team, self.DIM_FG)
+
+    # ------------------------------------------------------------------
+    # Panel sections
+    # ------------------------------------------------------------------
+
+    def _draw_status(self, app_state, solid_background, active_hero,
+                      display_state, now, unlock_at, draft_manager) -> None:
+        x = self.PAD
+        y = self._draw_pane_title(0, 0, "Status")
+        label_w = 118
+
+        def row(label, value, color=None):
+            nonlocal y
+            self._draw_text(label, (x, y), self._font_label, self.LBL_FG)
+            self._draw_text(value, (x + label_w, y), self._font_value, color)
+            y += 22
+
+        row("State:", app_state.replace("_", " ").title())
+        row("Background:", "Solid (OBS)" if solid_background else "Chroma Key")
+        row("Hero:", self._hero_display_name(active_hero.name) if active_hero else self.EMPTY_DASH)
+        row("Hero State:", display_state.capitalize() if app_state == "draft" else self.EMPTY_DASH)
+
+        if app_state in ("draft", "import_draft"):
+            is_locked = now < unlock_at
+            row("Hero Select:", "Locked" if is_locked else "Unlocked",
+                self.LOCKED_FG if is_locked else self.UNLOCKED_FG)
+            row("Draft Step:", draft_manager.step_label())
+            row("Next Action:", draft_manager.current_label())
+        else:
+            row("Hero Select:", self.EMPTY_DASH)
+            row("Draft Step:", self.EMPTY_DASH)
+            row("Next Action:", self.EMPTY_DASH)
+
+        y += 10
+        self._draw_text("Keybinds", (x, y), self._font_team, self.LBL_FG)
+        y += 24
+        for key, desc in [("F1", "Toggle background"), ("ESC", "Exit")]:
+            self._draw_text(key, (x, y), self._font_key, self.WIN_FG)
+            self._draw_text(desc, (x + 60, y), self._font_desc, self.DIM_FG)
+            y += 20
+
+        y += 10
+        self._draw_text("Windows", (x, y), self._font_team, self.LBL_FG)
+        y += 24
+        y = self._draw_toggle_row(x, y, "Main Window", self.main_window_visible, "main_window")
+        y = self._draw_toggle_row(x, y, "Draft Overlay", self.draft_overlay_visible, "draft_overlay")
+
+    def _draw_toggle_row(self, x: int, y: int, label: str, visible: bool, toggle_id: str) -> int:
+        """Draw a label + Hide/Show button. Clicking it flips the named
+        application window's visibility flag (handled in _handle_events)."""
+        self._draw_text(label, (x, y), self._font_label, self.LBL_FG)
+
+        btn_w, btn_h = 52, 20
+        btn_x = x + 150
+        rect = pygame.Rect(btn_x, y - 2, btn_w, btn_h)
+        self._fill(rect, self.SLOT_BG)
+        text = "Hide" if visible else "Show"
+        color = self.BTN_ON_FG if visible else self.BTN_OFF_FG
+        self._draw_text(text, (btn_x + 8, y - 1), self._font_desc, color)
+        self._app_toggle_rects[toggle_id] = rect
+
+        return y + 26
+
+    def _draw_slots(self, x0, slots) -> None:
+        y = self._draw_pane_header(x0, 0, "Draft Slots", "mid")
+        x = x0 + self.PAD
+        self._slot_edit_rects = []
+        y = self._draw_team_block(x, y, 1, "Hidden King", slots.team1_picks, slots.team1_bans)
+        y += 8
+        y = self._draw_team_block(x, y, 2, "ArchMother", slots.team2_picks, slots.team2_bans)
+        y += 16
+        self._draw_text("Click a filled slot to replace it", (x, y), self._font_desc, self.DIM_FG)
+        y += 16
+        hint = ("Click a hero below to select it"
+                if self._pane_visible["right"]
+                else "Expand Hero Keybinds (below) to select a hero")
+        self._draw_text(hint, (x, y), self._font_desc, self.DIM_FG)
+
+    def _draw_team_block(self, x, y, team, team_label, picks, bans) -> int:
+        self._draw_text(team_label, (x, y), self._font_team, self.WIN_FG)
+        y += 20
+        y = self._draw_slot_row(x, y, "Picks:", team, "pick", picks, self.WIN_FG)
+        y = self._draw_slot_row(x, y, "Bans:", team, "ban", bans, self.SLOT_BAN_FG)
+        return y
+
+    def _draw_slot_row(self, x, y, label, team, action_type, values, fg) -> int:
+        self._draw_text(label, (x, y), self._font_label, self.LBL_FG)
+        slot_x = x + 55
+        slot_w = 42
+        for idx, v in enumerate(values):
+            rect = pygame.Rect(slot_x, y - 2, slot_w - 4, 20)
+            self._fill(rect, self.SLOT_BG)
+            text = self._fit_slot_text(self._hero_display_name(v)) if v else self.EMPTY_SLOT
+            self._draw_text(text, (rect.x + 2, rect.y + 2), self._font_slot, fg)
+            if v:
+                if self._edit_target == (team, action_type, idx):
+                    self._renderer.draw_color = (*self.ARMED_FG, 255)
+                    self._renderer.draw_rect(rect)
+                self._slot_edit_rects.append((rect, team, action_type, idx))
+            slot_x += slot_w
+        return y + 24
+
+    def _draw_hero_keybinds(self, y0) -> None:
+        content_top = self._draw_pane_header(0, y0, "Hero Keybinds", "right")
+        self._draw_text("(click a hero to select)", (self.PAD, content_top), self._font_desc, self.DIM_FG)
+        content_y = content_top + 18
+
+        self._hero_click_rects = []
+        for c_idx, chunk in enumerate(self._hero_chunks):
+            cx = self.PAD + c_idx * self.HERO_COL_W
+            for i, (combo, name, _volume) in enumerate(chunk):
+                cy = content_y + i * self.ROW_H
+                self._draw_text(self._fmt_combo(combo), (cx, cy), self._font_key, self.WIN_FG)
+                available = name in self._hero_names
+                color = self.DIM_FG if available else self.UNAVAIL_FG
+                self._draw_text(self._hero_display_name(name), (cx + 78, cy), self._font_desc, color)
+                rect = pygame.Rect(cx, cy - 2, self.HERO_COL_W - 12, self.ROW_H)
+                self._hero_click_rects.append((rect, name))
+
+    # ------------------------------------------------------------------
+    # Input handling
+    # ------------------------------------------------------------------
+
+    def _handle_events(self, events) -> None:
+        """Handle collapse, window-visibility, and hero-select clicks,
+        using the hit rects computed during the previous frame's draw."""
+        for event in events:
+            if event.type != pygame.MOUSEBUTTONDOWN or event.button != 1:
+                continue
+            window = getattr(event, "window", None)
+            if window is None or window.id != self._window.id:
+                continue
+
+            handled = False
+            for pane_key, rect in self._pane_toggle_rects.items():
+                if rect.collidepoint(event.pos):
+                    self._pane_visible[pane_key] = not self._pane_visible[pane_key]
+                    handled = True
+                    break
+            if handled:
+                continue
+
+            for toggle_id, rect in self._app_toggle_rects.items():
+                if rect.collidepoint(event.pos):
+                    if toggle_id == "main_window":
+                        self.main_window_visible = not self.main_window_visible
+                    elif toggle_id == "draft_overlay":
+                        self.draft_overlay_visible = not self.draft_overlay_visible
+                    handled = True
+                    break
+            if handled:
+                continue
+
+            # Clicking a filled slot's body arms/disarms it for replacement.
+            for rect, team, action_type, idx in self._slot_edit_rects:
+                if rect.collidepoint(event.pos):
+                    if self._on_slot_edit:
+                        self._on_slot_edit(team, action_type, idx)
+                    handled = True
+                    break
+            if handled:
+                continue
+
+            if not self._on_hero_select:
+                continue
+            for rect, name in self._hero_click_rects:
+                if name in self._hero_names and rect.collidepoint(event.pos):
+                    self._on_hero_select(name)
+                    break
+
+    # ------------------------------------------------------------------
+    # Per-frame update
+    # ------------------------------------------------------------------
+
+    def update(self, app_state: str, solid_background: bool,
+               active_hero, display_state: str,
+               now: int, unlock_at: float, draft_manager, events=(),
+               edit_target=None) -> None:
+        """Handle clicks, redraw the panel, and present it. Call once per frame.
+
+        events     : this frame's pygame.event.get() list (shared with the
+                     main loop), used to detect clicks on this window.
+        edit_target: (team, action_type, index) of the slot currently armed
+                     for replacement (see on_slot_edit), or None. Owned by
+                     the caller; only used here to highlight the slot.
+        """
+        self._edit_target = edit_target
+        self._handle_events(events)
+        self._pane_toggle_rects = {}
+        self._app_toggle_rects = {}
+
+        mid_visible  = self._pane_visible["mid"]
+        hero_visible = self._pane_visible["right"]
+
+        mid_w  = self.MID_W if mid_visible else self.COLLAPSED_W
+        hero_h = self._bottom_h if hero_visible else self.COLLAPSED_H
+
+        row1_w = self.LEFT_W + mid_w
+        new_width  = max(row1_w, self._hero_pane_w if hero_visible else 0, self.LEFT_W)
+        new_height = self.TOP_H + self.SEP_W + hero_h
+        if (new_width, new_height) != (self._width, self._height):
+            self._width, self._height = new_width, new_height
+            self._window.size = (self._width, self._height)
+
+        r = self._renderer
+        r.draw_color = (*self.WIN_BG, 255)
+        r.clear()
+
+        # Top row: Status (always) + Draft Slots (collapsible)
+        self._draw_status(app_state, solid_background, active_hero,
+                           display_state, now, unlock_at, draft_manager)
+        self._draw_vsep(self.LEFT_W, 0, self.TOP_H)
+        if mid_visible:
+            self._draw_slots(self.LEFT_W, draft_manager.slots)
+        else:
+            self._slot_edit_rects = []
+            self._draw_collapsed_v(self.LEFT_W, mid_w, self.TOP_H, "Draft Slots", "mid")
+
+        # Bottom row: Hero Keybinds, spanning the full width (collapsible)
+        self._draw_hsep(self.TOP_H)
+        content_y0 = self.TOP_H + self.SEP_W
+        if hero_visible:
+            self._draw_hero_keybinds(content_y0)
+        else:
+            self._hero_click_rects = []
+            self._draw_collapsed_h(content_y0, hero_h, "Hero Keybinds", "right")
+
+        r.present()
+
+    # ------------------------------------------------------------------
+    # Formatting helpers
+    # ------------------------------------------------------------------
 
     @staticmethod
     def _fmt_combo(combo: str) -> str:
@@ -264,45 +446,9 @@ class StatusWindow:
         """
         return name.replace("_", " ").title()
 
-    # ------------------------------------------------------------------
-    # Per-frame update
-    # ------------------------------------------------------------------
-
-    def update(self, app_state: str, solid_background: bool,
-               active_hero, display_state: str,
-               now: int, unlock_at: float, draft_manager) -> None:
-        """Refresh all labels and pump the tkinter event loop."""
-        self.sv_state.set(app_state.replace("_", " ").title())
-        self.sv_bg_mode.set("Solid (OBS)" if solid_background else "Chroma Key")
-        self.sv_hero.set(self._hero_display_name(active_hero.name) if active_hero else "\u2014")
-        self.sv_hero_state.set(display_state.capitalize() if app_state == "draft" else "\u2014")
-
-        if app_state in ("draft", "import_draft"):
-            is_locked = now < unlock_at
-            self.sv_locked.set("Locked" if is_locked else "Unlocked")
-            self._locked_lbl.config(fg=self.LOCKED_FG if is_locked else self.UNLOCKED_FG)
-            self.sv_draft_step.set(draft_manager.step_label())
-            self.sv_draft_action.set(draft_manager.current_label())
-        else:
-            self.sv_locked.set("\u2014")
-            self._locked_lbl.config(fg=self.WIN_FG)
-            self.sv_draft_step.set("\u2014")
-            self.sv_draft_action.set("\u2014")
-
-        self._update_slots(draft_manager.slots)
-        self.root.update()
-
-    def _update_slots(self, slots) -> None:
-        def _fmt(val):
-            return self._hero_display_name(val) if val else self.EMPTY_SLOT
-        for i, v in enumerate(self.sv_t1_picks):
-            v.set(_fmt(slots.team1_picks[i]))
-        for i, v in enumerate(self.sv_t1_bans):
-            v.set(_fmt(slots.team1_bans[i]))
-        for i, v in enumerate(self.sv_t2_picks):
-            v.set(_fmt(slots.team2_picks[i]))
-        for i, v in enumerate(self.sv_t2_bans):
-            v.set(_fmt(slots.team2_bans[i]))
+    @staticmethod
+    def _fit_slot_text(text: str, max_chars: int = 6) -> str:
+        return text if len(text) <= max_chars else text[:max_chars - 1] + "\u2026"
 
     # ------------------------------------------------------------------
     # Lifecycle
@@ -310,6 +456,6 @@ class StatusWindow:
 
     def destroy(self) -> None:
         try:
-            self.root.destroy()
+            self._window.destroy()
         except Exception:
             pass
